@@ -155,17 +155,27 @@ class AppMain {
         }
 
         private fun asgDesiredCapacity(scaleUp: Int) {
-            //   AwsCredentialsProviderChain.of(ProfileCredentialsProvider.builder()
-            //                                                                 .profileName(TEST_CREDENTIALS_PROFILE_NAME)
-            //                                                                 .build(),
-            //                                       DefaultCredentialsProvider.create());
             val autoscaling = AutoScalingClient.builder()
                 //.credentialsProvider(CREDENTIALS_PROVIDER_CHAIN)
                 .region(Region.EU_WEST_2)
                 .build()
+
             val autoScalingGroupName = ""
+
+            val current = autoscaling.describeAutoScalingGroups(
+                DescribeAutoScalingGroupsRequest.builder()
+                    .autoScalingGroupNames(autoScalingGroupName).build()
+            )
+
+            val currentDesiredCapacity = current.autoScalingGroups().first().desiredCapacity()
+
+            //   AwsCredentialsProviderChain.of(ProfileCredentialsProvider.builder()
+            //                                                                 .profileName(TEST_CREDENTIALS_PROFILE_NAME)
+            //                                                                 .build(),
+            //                                       DefaultCredentialsProvider.create());
+
             val updateRequest: UpdateAutoScalingGroupRequest = UpdateAutoScalingGroupRequest.builder()
-                .autoScalingGroupName(autoScalingGroupName).desiredCapacity(20).build()
+                .autoScalingGroupName(autoScalingGroupName).desiredCapacity(currentDesiredCapacity + scaleUp).build()
             autoscaling.updateAutoScalingGroup(updateRequest)
 
             // Check our updates
