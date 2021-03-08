@@ -1,5 +1,6 @@
 package com.github.carolosf
 
+import io.fabric8.kubernetes.api.model.NodeStatus
 import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.Quantity
 import io.fabric8.kubernetes.client.ConfigBuilder
@@ -10,143 +11,241 @@ import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
 import software.amazon.awssdk.services.autoscaling.model.UpdateAutoScalingGroupRequest
 import java.math.BigDecimal
+import java.math.RoundingMode
+import kotlin.math.max
 
-data class Resources (val cpu: Int, val memory: BigDecimal)
+data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long)
+
+interface IScalerStrategy {
+    fun calculateScaleFactor(currentScaleUpFactor: Int,
+                             totalAvailable: Resources,
+                             asgOneNodeCapacity: Resources
+    ): Int
+}
+
+class ScalerStrategy() : IScalerStrategy {
+    override fun calculateScaleFactor(currentScaleUpFactor: Int,
+                                      totalAvailable: Resources,
+                                      asgOneNodeCapacity: Resources
+
+    ):Int {
+        val desiredCpu = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.cpu)
+        val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu)
+
+        val desiredMemory = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.memory)
+        val scaleUpMemory = desiredMemory.minus(totalAvailable.memory).divide(asgOneNodeCapacity.memory)
+
+        val desiredPods = BigDecimal(currentScaleUpFactor).multiply(BigDecimal(asgOneNodeCapacity.pods))
+        val scaleUpPods = desiredPods.minus(BigDecimal(totalAvailable.pods)).divide(BigDecimal(asgOneNodeCapacity.pods))
+
+        return max(max(
+            scaleUpCpu.setScale(0, RoundingMode.UP).longValueExact(),
+            scaleUpMemory.setScale(0, RoundingMode.UP).longValueExact()
+        ), scaleUpPods.setScale(0, RoundingMode.UP).longValueExact()).toInt()
+    }
+
+}
 
 // TODO: This is still proof of concept stage, don't use this in production without testing and tidy up
 @QuarkusMain
 class AppMain {
     companion object {
+        private const val cpuMConstant = 1000 // TODO: this is how many m there are per core need to find the code for this and make sure
+
         @JvmStatic
         fun main(args: Array<String>) {
-            val config = ConfigBuilder().build()
-            val client = DefaultKubernetesClient(config)
+            val client = getAndConfigureKubernetesClient()
             client.use {
-                // todo: Needs massive optimisation
-                val nodeNames = it.nodes().list().items.map{ node -> node.metadata.name}
-                val activePods: MutableMap<String, List<Pod>> = mutableMapOf()
-                nodeNames.forEach { node ->
-                    activePods[node] = it.pods()
-                        .withField("spec.nodeName", node)
-                        .withoutField("status.phase", "Succeeded")
-                        .withoutField("status.phase", "Failed").list().items
-                }
+                val asgOneNodeCapacity = Resources(
+                    BigDecimal(System.getenv("NODE_CPU")?.toLong() ?: 8000),
+                    BigDecimal(System.getenv("NODE_MEMORY")?.toLong() ?: 16323915776),
+                    System.getenv("NODE_PODS")?.toLong() ?: 110
+                )
+                val currentScaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 1
+
+                val nodeNames = getSchedulableWorkerNodes(it)
+                val activePodsByNode: Map<String, List<Pod>> = nodeNames.map { nodeName ->
+                    nodeName to getNodeNonTerminatedPodList(it, nodeName)
+                }.toMap()
 
                 val nodeCapacity: MutableMap<String, Resources> = mutableMapOf()
                 val nodeAllocatable: MutableMap<String, Resources> = mutableMapOf()
                 val podRequested: MutableMap<String, Resources> = mutableMapOf()
                 val podLimits: MutableMap<String, Resources> = mutableMapOf()
 
-                val mConstant = 1000 // TODO: this is how many m there are per core need to find the code for this and make sure
                 nodeNames.forEach { node ->
-                    val status = it.nodes().withName(node)?.get()?.status
-                    nodeCapacity[node] =  Resources(
-                        (status?.capacity?.get("cpu")?.amount?.toInt() ?: 0) * mConstant,
-                            getMemAmount(status?.capacity?.get("memory")),
-                            )
-                    nodeAllocatable[node] =  Resources(
-                        (status?.allocatable?.get("cpu")?.amount?.toInt() ?: 0) * mConstant,
-                        getMemAmount(status?.allocatable?.get("memory")),
+                    val nodeStatus = it.nodes().withName(node)?.get()?.status
+                    nodeCapacity[node] = Resources(
+                        getCpuCapacityFromNodeStatus(nodeStatus),
+                        getMemoryCapacityFromNodeStatus(nodeStatus),
+                        getPodCapacityFromNodeStatus(nodeStatus)
                     )
+                    nodeAllocatable[node] = Resources(
+                        getAllocatableCpuFromNodeStatus(nodeStatus),
+                        getAllocatableMemoryFromNodeStatus(nodeStatus),
+                        getAllocatablePodsFromNodeStatus(nodeStatus)
+                    )
+
+                    val activePodsOnNode = activePodsByNode[node]
                     podRequested[node] = Resources(
-                            // https://github.com/kubernetes/kubectl/blob/b3f4363d68d55b34384965cae7a93cef2aac8ffe/pkg/util/resource/resource.go#L34
-                            activePods[node]?.fold(0, {
-                                a, p ->
-                                return@fold a +
-                                p.spec.initContainers.fold(0, {aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa}) +
-                                p.spec.containers.fold(0, {aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu"))+ aa}) + (getCpuAmount(p.spec.overhead?.get("cpu")))
-                            }
-                            ) ?: 0,
-                        activePods[node]?.fold(BigDecimal.ZERO, {
-                                a, p ->
-                            return@fold a +
-                                    p.spec.initContainers.fold(BigDecimal.ZERO, {aa, cc -> getMemAmount(cc.resources.requests?.get("memory")) + aa}) +
-                                    p.spec.containers.fold(BigDecimal.ZERO, {aa, cc -> getMemAmount(cc.resources.requests?.get("memory")) + aa}) + (getMemAmount(p.spec.overhead?.get("memory")))
-                        }
-                        ) ?: BigDecimal.ZERO
+                        getTotalCpuRequestsFromListOfPods(activePodsOnNode),
+                        getTotalMemoryRequestsFromListOfPods(activePodsOnNode),
+                        activePodsOnNode?.count()?.toLong() ?: 0
                     )
                     podLimits[node] = Resources(
-                        // https://github.com/kubernetes/kubectl/blob/b3f4363d68d55b34384965cae7a93cef2aac8ffe/pkg/util/resource/resource.go#L34
-                        activePods[node]?.fold(0, {
-                                a, p ->
-                            return@fold a +
-                                    p.spec.initContainers.fold(0, {aa, cc -> getCpuAmount(cc.resources.limits?.get("cpu")) + aa}) +
-                                    p.spec.containers.fold(0, {aa, cc -> getCpuAmount(cc.resources.limits?.get("cpu"))+ aa}) + (getCpuAmount(p.spec.overhead?.get("cpu")))
-                        }
-                        ) ?: 0,
-                        activePods[node]?.fold(BigDecimal.ZERO, {
-                                a, p ->
-                            return@fold a +
-                                    p.spec.initContainers.fold(BigDecimal.ZERO, {aa, cc -> getMemAmount(cc.resources.limits?.get("memory")) + aa}) +
-                                    p.spec.containers.fold(BigDecimal.ZERO, {aa, cc -> getMemAmount(cc.resources.limits?.get("memory")) + aa}) + (getMemAmount(p.spec.overhead?.get("memory")))
-                        }
-                        ) ?: BigDecimal.ZERO
+                        getTotalCpuLimitsFromListOfPods(activePodsOnNode),
+                        getTotalMemoryLimitsFromListOfPods(activePodsOnNode),
+                        0
                     )
                 }
 
                 val totalCapacity = Resources(
-                    nodeCapacity.values.fold(0, {a,r -> r.cpu + a }),
-                    nodeCapacity.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a })
+                    nodeCapacity.values.fold(BigDecimal.ZERO, { a, r -> r.cpu + a }),
+                    nodeCapacity.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a }),
+                    nodeCapacity.values.fold(0, { a, r -> r.pods + a })
                 )
 
                 val totalAllocatable = Resources(
-                    nodeAllocatable.values.fold(0, {a,r -> r.cpu + a }),
-                    nodeAllocatable.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a })
+                    nodeAllocatable.values.fold(BigDecimal.ZERO, { a, r -> r.cpu + a }),
+                    nodeAllocatable.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a }),
+                    nodeAllocatable.values.fold(0, { a, r -> r.pods + a })
                 )
 
                 val totalRequested = Resources(
-                    podRequested.values.fold(0, {a,r -> r.cpu + a }),
-                    podRequested.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a })
+                    podRequested.values.fold(BigDecimal.ZERO, { a, r -> r.cpu + a }),
+                    podRequested.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a }),
+                    podRequested.values.fold(0, { a, r -> r.pods + a })
                 )
 
                 val totalLimits = Resources(
-                    podRequested.values.fold(0, {a,r -> r.cpu + a }),
-                    podRequested.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a })
-                )
-
-                val asgOneNodeCapacity = Resources(
-                    8000,
-                    BigDecimal(16323915776)
+                    podLimits.values.fold(BigDecimal.ZERO, { a, r -> r.cpu + a }),
+                    podLimits.values.fold(BigDecimal.ZERO, { a, r -> r.memory + a }),
+                    podLimits.values.fold(0, { a, r -> r.pods + a })
                 )
 
                 val totalAvailable = Resources(
                     totalAllocatable.cpu - totalRequested.cpu,
-                    totalAllocatable.memory - totalRequested.memory
+                    totalAllocatable.memory - totalRequested.memory,
+                    totalAllocatable.pods - totalRequested.pods
                 )
 
-                var scaleUp = 0
-                if (totalAvailable.cpu < asgOneNodeCapacity.cpu) {
-                    scaleUp = 1
-                }
-
-                if (totalAvailable.memory < asgOneNodeCapacity.memory) {
-                    scaleUp = 1
-                }
+                val scalerStrategy = ScalerStrategy()
+                val scaleUp =
+                    scalerStrategy.calculateScaleFactor(currentScaleUpFactor, totalAvailable, asgOneNodeCapacity)
 
                 if (scaleUp > 0) {
                     println("Scale by $scaleUp")
                     asgDesiredCapacity(scaleUp)
                 }
-
-                // capacity
-                // allocatable
-                // requested
-                // limits
             }
         }
 
-        private fun getCpuAmount(q : Quantity?): Int {
+        private fun getAllocatablePodsFromNodeStatus(nodeStatus: NodeStatus?) =
+            nodeStatus?.capacity?.get("pods")?.amount?.toLong() ?: 0
+
+        private fun getPodCapacityFromNodeStatus(nodeStatus: NodeStatus?) =
+            nodeStatus?.capacity?.get("pods")?.amount?.toLong() ?: 0
+
+        private fun getTotalMemoryLimitsFromListOfPods(activePodsOnNode: List<Pod>?) =
+            activePodsOnNode?.fold(BigDecimal.ZERO, { a, p ->
+                return@fold a +
+                        p.spec.initContainers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getMemAmount(cc.resources.limits?.get("memory")) + aa }) +
+                        p.spec.containers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getMemAmount(cc.resources.limits?.get("memory")) + aa }) + (getMemAmount(
+                    p.spec.overhead?.get("memory")
+                ))
+            }
+            ) ?: BigDecimal.ZERO
+
+        private fun getTotalCpuLimitsFromListOfPods(activePodsOnNode: List<Pod>?) =
+            activePodsOnNode?.fold(BigDecimal.ZERO, { a, p ->
+                return@fold a +
+                        p.spec.initContainers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getCpuAmount(cc.resources.limits?.get("cpu")) + aa }) +
+                        p.spec.containers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getCpuAmount(cc.resources.limits?.get("cpu")) + aa }) + (getCpuAmount(
+                    p.spec.overhead?.get("cpu")
+                ))
+            }
+            ) ?: BigDecimal.ZERO
+
+        private fun getTotalMemoryRequestsFromListOfPods(activePodsOnNode: List<Pod>?) =
+            activePodsOnNode?.fold(BigDecimal.ZERO, { a, p ->
+                return@fold a +
+                        p.spec.initContainers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getMemAmount(cc.resources.requests?.get("memory")) + aa }) +
+                        p.spec.containers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getMemAmount(cc.resources.requests?.get("memory")) + aa }) + (getMemAmount(
+                    p.spec.overhead?.get("memory")
+                ))
+            }
+            ) ?: BigDecimal.ZERO
+
+        private fun getTotalCpuRequestsFromListOfPods(activePodsOnNode: List<Pod>?) =
+            activePodsOnNode?.fold(BigDecimal.ZERO, { a, p ->
+                return@fold a +
+                        p.spec.initContainers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) +
+                        p.spec.containers.fold(
+                            BigDecimal.ZERO,
+                            { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) + (getCpuAmount(
+                    p.spec.overhead?.get("cpu")
+                ))
+            }
+            ) ?: BigDecimal.ZERO
+
+        private fun getAllocatableMemoryFromNodeStatus(nodeStatus: NodeStatus?) =
+            getMemAmount(nodeStatus?.allocatable?.get("memory"))
+
+        private fun getAllocatableCpuFromNodeStatus(nodeStatus: NodeStatus?) =
+            (nodeStatus?.allocatable?.get("cpu")?.amount?.toInt()?.let { BigDecimal(it) }
+                ?: BigDecimal.ZERO) * BigDecimal(cpuMConstant)
+
+        private fun getMemoryCapacityFromNodeStatus(nodeStatus: NodeStatus?) =
+            getMemAmount(nodeStatus?.capacity?.get("memory"))
+
+        private fun getCpuCapacityFromNodeStatus(nodeStatus: NodeStatus?) =
+            (nodeStatus?.capacity?.get("cpu")?.amount?.toInt()?.let { BigDecimal(it) } ?: BigDecimal.ZERO) * BigDecimal(
+                cpuMConstant
+            )
+
+        private fun getSchedulableWorkerNodes(it: DefaultKubernetesClient) =
+            it.nodes().withLabelIn("node-role.kubernetes.io/worker", "true").list().items.filter { !it.spec.unschedulable } .map { node -> node.metadata.name }
+
+        private fun getNodeNonTerminatedPodList(
+            it: DefaultKubernetesClient,
+            node: String?
+        ) = it.pods()
+            .withField("spec.nodeName", node)
+            .withoutField("status.phase", "Succeeded")
+            .withoutField("status.phase", "Failed").list().items
+
+        private fun getAndConfigureKubernetesClient(): DefaultKubernetesClient {
+            val config = ConfigBuilder().build()
+            val client = DefaultKubernetesClient(config)
+            return client
+        }
+
+        private fun getCpuAmount(q: Quantity?): BigDecimal {
             if (q == null) {
-                return 0
+                return BigDecimal.ZERO
             }
 
             if (q.format != "m") {
                 throw IllegalStateException("Unexpected format ${q.format}")
             }
-            return q.amount.toInt()
+            return BigDecimal(q.amount.toInt())
         }
 
-        private fun getMemAmount(q : Quantity?): BigDecimal {
+        private fun getMemAmount(q: Quantity?): BigDecimal {
             if (q == null) {
                 return BigDecimal.ZERO
             }
