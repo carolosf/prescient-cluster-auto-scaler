@@ -285,10 +285,17 @@ class AppMain {
                 return BigDecimal.ZERO
             }
 
-            if (q.format != "m") {
-                throw IllegalStateException("Unexpected format ${q.format}")
+            return when (q.format) {
+                "" -> {
+                    BigDecimal(q.amount.toInt() * cpuMConstant)
+                }
+                "m" -> {
+                    BigDecimal(q.amount.toInt())
+                }
+                else -> {
+                    throw IllegalStateException()
+                }
             }
-            return BigDecimal(q.amount.toInt())
         }
 
         private fun getMemAmount(q: Quantity?): BigDecimal {
