@@ -63,7 +63,9 @@ class AppMain {
             get() {
                 return Resources(
                     BigDecimal(System.getenv("NODE_CPU")?.toLong() ?: 8000),
-                    BigDecimal(System.getenv("NODE_MEMORY")?.toLong() ?: 16323915776),
+                    Quantity.getAmountInBytes(
+                        Quantity.parse(System.getenv("NODE_MEMORY") ?: "16323915776")
+                    ),
                     System.getenv("NODE_PODS")?.toLong() ?: 110
                 )
             }
