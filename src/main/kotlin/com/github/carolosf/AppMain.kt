@@ -35,13 +35,13 @@ class ScalerStrategy() : IScalerStrategy {
 
     ):Int {
         val desiredCpu = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.cpu)
-        val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu)
+        val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu, RoundingMode.HALF_DOWN)
 
         val desiredMemory = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.memory)
-        val scaleUpMemory = desiredMemory.minus(totalAvailable.memory).divide(asgOneNodeCapacity.memory)
+        val scaleUpMemory = desiredMemory.minus(totalAvailable.memory).divide(asgOneNodeCapacity.memory, RoundingMode.HALF_DOWN)
 
         val desiredPods = BigDecimal(currentScaleUpFactor).multiply(BigDecimal(asgOneNodeCapacity.pods))
-        val scaleUpPods = desiredPods.minus(BigDecimal(totalAvailable.pods)).divide(BigDecimal(asgOneNodeCapacity.pods))
+        val scaleUpPods = desiredPods.minus(BigDecimal(totalAvailable.pods)).divide(BigDecimal(asgOneNodeCapacity.pods), RoundingMode.HALF_DOWN)
 
         return max(max(
             scaleUpCpu.setScale(0, RoundingMode.UP).longValueExact(),
