@@ -88,9 +88,7 @@ class AppMain {
                 client.use {
                     val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
 
-                    if (scaleUpResponse.scaleUp > 0) {
-                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
-                    }
+                    asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
                 }
                 WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
             }
