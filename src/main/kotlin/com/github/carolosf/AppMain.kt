@@ -5,6 +5,8 @@ import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.Quantity
 import io.fabric8.kubernetes.client.ConfigBuilder
 import io.fabric8.kubernetes.client.DefaultKubernetesClient
+import io.quarkus.runtime.Quarkus
+import io.quarkus.runtime.QuarkusApplication
 import io.quarkus.runtime.annotations.QuarkusMain
 import org.jboss.logging.Logger
 import software.amazon.awssdk.regions.Region
@@ -82,17 +84,25 @@ class AppMain {
         private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
 
         @JvmStatic
-        fun main(args: Array<String>) {
-            setUpShutdownHook()
-            val client = getAndConfigureKubernetesClient()
-            LOG.info("Start server")
-            while (active.get()) {
-                client.use {
-                    val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
+        fun main(vararg args: String) {
+            Quarkus.run(MyApp::class.java, *args)
+        }
+        class MyApp : QuarkusApplication {
+            @Throws(Exception::class)
+            override fun run(vararg args: String): Int {
+                setUpShutdownHook()
+                val client = getAndConfigureKubernetesClient()
+                LOG.info("Starting prescient-cluster-auto-scaler")
+                while (active.get()) {
+                    client.use {
+                        val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
 
-                    asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
+                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
+                    }
+                    WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
                 }
-                WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
+                Quarkus.waitForExit()
+                return 0
             }
         }
 
