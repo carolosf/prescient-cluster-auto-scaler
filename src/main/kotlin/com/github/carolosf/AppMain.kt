@@ -265,7 +265,7 @@ class AppMain {
                 .withLabelIn("node-role.kubernetes.io/worker", "true")
                 .list()
                 .items
-                .filter { it.spec.unschedulable != true}
+                .filter {!(it?.spec?.unschedulable ?: false)}
                 .map { node -> node.metadata.name }
 
         private fun getNodeNonTerminatedPodList(
