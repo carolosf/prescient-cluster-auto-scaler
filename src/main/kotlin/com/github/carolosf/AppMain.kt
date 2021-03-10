@@ -64,9 +64,11 @@ class AppMain {
         private val asgOneNodeCapacity: Resources
             get() {
                 return Resources(
-                    BigDecimal(System.getenv("NODE_CPU")?.toLong() ?: 8000),
-                    Quantity.getAmountInBytes(
-                        Quantity.parse(System.getenv("NODE_MEMORY") ?: "16323915776")
+                    getCpuAmount(
+                        Quantity.parse(System.getenv("NODE_CPU")?.toString() ?: "8000")
+                    ),
+                    getMemAmount(
+                        Quantity.parse(System.getenv("NODE_MEMORY")?.toString() ?: "16323915776")
                     ),
                     System.getenv("NODE_PODS")?.toLong() ?: 110
                 )
