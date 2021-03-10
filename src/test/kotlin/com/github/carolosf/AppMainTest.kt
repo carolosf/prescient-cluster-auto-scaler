@@ -3,9 +3,6 @@ package com.github.carolosf
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import java.math.BigDecimal
-import kotlinx.coroutines.*
-import java.time.ZonedDateTime
-import java.time.temporal.ChronoUnit
 
 class AppMainTest {
     @Test
@@ -25,7 +22,7 @@ class AppMainTest {
             Resources(BigDecimal(2000), BigDecimal(990000), 990000),
             Resources(BigDecimal(4000), BigDecimal(1000), 100)
         )
-        Assertions.assertEquals(2, scaleFactor)
+        Assertions.assertEquals(1, scaleFactor)
     }
 
     @Test
@@ -55,7 +52,7 @@ class AppMainTest {
             Resources(BigDecimal(990000), BigDecimal(2000), 990000),
             Resources(BigDecimal(1000), BigDecimal(4000), 100)
         )
-        Assertions.assertEquals(2, scaleFactor)
+        Assertions.assertEquals(1, scaleFactor)
     }
 
     @Test
