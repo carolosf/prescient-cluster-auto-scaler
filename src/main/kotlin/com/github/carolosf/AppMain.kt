@@ -10,7 +10,7 @@ import org.jboss.logging.Logger
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
-import software.amazon.awssdk.services.autoscaling.model.UpdateAutoScalingGroupRequest
+import software.amazon.awssdk.services.autoscaling.model.SetDesiredCapacityRequest
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.ZonedDateTime
@@ -51,6 +51,8 @@ class ScalerStrategy() : IScalerStrategy {
 
 }
 
+data class ScaleUpResponse(val scaleUp: Int, val nodeCount: Int)
+
 // TODO: This is still proof of concept stage, don't use this in production without testing and tidy up
 @QuarkusMain
 class AppMain {
@@ -74,6 +76,9 @@ class AppMain {
         private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 10
         private val dryRun = System.getenv("DRY_RUN")?.toBoolean() ?: true
 
+        private val awsRegion = Region.of(System.getenv("AWS_REGION") ?: "eu-west-2")!! // TODO: throw illegal arg exception if not set
+        private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
+
         @JvmStatic
         fun main(args: Array<String>) {
             setUpShutdownHook()
@@ -81,13 +86,10 @@ class AppMain {
             LOG.info("Start server")
             while (active.get()) {
                 client.use {
-                    val scaleUp = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
+                    val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
 
-                    if (scaleUp > 0) {
-                        LOG.info("Scale by $scaleUp")
-                        if (!dryRun) {
-                            asgDesiredCapacity(scaleUp)
-                        }
+                    if (scaleUpResponse.scaleUp > 0) {
+                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
                     }
                 }
                 WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
@@ -110,7 +112,7 @@ class AppMain {
             kubernetesClient: DefaultKubernetesClient,
             currentScaleUpFactor: Int,
             asgOneNodeCapacity: Resources
-        ): Int {
+        ): ScaleUpResponse {
             val nodeNames = getSchedulableWorkerNodes(kubernetesClient)
             val activePodsByNode: Map<String, List<Pod>> = nodeNames.map { nodeName ->
                 nodeName to getNodeNonTerminatedPodList(kubernetesClient, nodeName)
@@ -180,7 +182,7 @@ class AppMain {
             val scalerStrategy = ScalerStrategy()
             val scaleUp =
                 scalerStrategy.calculateScaleFactor(currentScaleUpFactor, totalAvailable, asgOneNodeCapacity)
-            return scaleUp
+            return ScaleUpResponse(scaleUp, nodeNames.count())
         }
 
         private fun getAllocatablePodsFromNodeStatus(nodeStatus: NodeStatus?) =
@@ -308,35 +310,43 @@ class AppMain {
             return Quantity.getAmountInBytes(q)
         }
 
-        private fun asgDesiredCapacity(scaleUp: Int) {
+        private fun asgDesiredCapacity(currentNodeCount: Int, scaleUp: Int) {
             val autoscaling = AutoScalingClient.builder()
-                //.credentialsProvider(CREDENTIALS_PROVIDER_CHAIN)
-                .region(Region.EU_WEST_2)
+                .region(awsRegion)
                 .build()
-
-            val autoScalingGroupName = ""
 
             val current = autoscaling.describeAutoScalingGroups(
                 DescribeAutoScalingGroupsRequest.builder()
-                    .autoScalingGroupNames(autoScalingGroupName).build()
+                    .autoScalingGroupNames(awsAsgName).build()
             )
 
             val currentDesiredCapacity = current.autoScalingGroups().first().desiredCapacity()
+            LOG.info("Current asg capacity: $currentDesiredCapacity")
+            LOG.info("Current node count: $currentNodeCount")
+            LOG.info("Suggested scale up count: $scaleUp")
 
-            //   AwsCredentialsProviderChain.of(ProfileCredentialsProvider.builder()
-            //                                                                 .profileName(TEST_CREDENTIALS_PROFILE_NAME)
-            //                                                                 .build(),
-            //                                       DefaultCredentialsProvider.create());
-
-            val updateRequest: UpdateAutoScalingGroupRequest = UpdateAutoScalingGroupRequest.builder()
-                .autoScalingGroupName(autoScalingGroupName).desiredCapacity(currentDesiredCapacity + scaleUp).build()
-            autoscaling.updateAutoScalingGroup(updateRequest)
+            val desiredCapacity = currentNodeCount + scaleUp
+            if (!dryRun && desiredCapacity != currentDesiredCapacity) {
+                LOG.info("Setting desired capacity : $desiredCapacity")
+                autoscaling.setDesiredCapacity(
+                    SetDesiredCapacityRequest.builder()
+                        .autoScalingGroupName(awsAsgName)
+                        .desiredCapacity(desiredCapacity)
+                        .build()
+                )
+            } else {
+                LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
+            }
 
             // Check our updates
-            val result = autoscaling.describeAutoScalingGroups(
+            val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
                 DescribeAutoScalingGroupsRequest.builder()
-                    .autoScalingGroupNames(autoScalingGroupName).build()
-            )
+                    .autoScalingGroupNames(awsAsgName).build()
+            ).autoScalingGroups().first().desiredCapacity()
+            LOG.info("Updated desired capacity: $updatedDesiredCapacity")
+            if (!dryRun && desiredCapacity != updatedDesiredCapacity) {
+                LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
+            }
         }
     }
 }
