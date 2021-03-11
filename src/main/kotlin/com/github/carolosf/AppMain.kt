@@ -369,26 +369,30 @@ class AppMain {
             LOG.info("Suggested scale up count: $scaleUp")
 
             val desiredCapacity = currentDesiredCapacity + scaleUp
-            if (!dryRun && desiredCapacity != currentDesiredCapacity) {
-                LOG.info("Setting desired capacity : $desiredCapacity")
-                autoscaling.setDesiredCapacity(
-                    SetDesiredCapacityRequest.builder()
-                        .autoScalingGroupName(awsAsgName)
-                        .desiredCapacity(desiredCapacity)
-                        .build()
-                )
+            if (!dryRun) {
+                if (desiredCapacity != currentDesiredCapacity) {
+                    LOG.info("Setting desired capacity : $desiredCapacity")
+                    autoscaling.setDesiredCapacity(
+                        SetDesiredCapacityRequest.builder()
+                            .autoScalingGroupName(awsAsgName)
+                            .desiredCapacity(desiredCapacity)
+                            .build()
+                    )
+                    // Check our updates
+                    val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
+                        DescribeAutoScalingGroupsRequest.builder()
+                            .autoScalingGroupNames(awsAsgName).build()
+                    ).autoScalingGroups().first().desiredCapacity()
+                    LOG.info("Updated desired capacity: $updatedDesiredCapacity")
+
+                    if (desiredCapacity != updatedDesiredCapacity) {
+                        LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
+                    }
+                } else {
+                    LOG.info("No change required already at desired capacity: $desiredCapacity")
+                }
             } else {
                 LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
-            }
-
-            // Check our updates
-            val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
-                DescribeAutoScalingGroupsRequest.builder()
-                    .autoScalingGroupNames(awsAsgName).build()
-            ).autoScalingGroups().first().desiredCapacity()
-            LOG.info("Updated desired capacity: $updatedDesiredCapacity")
-            if (!dryRun && desiredCapacity != updatedDesiredCapacity) {
-                LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
             }
         }
     }
