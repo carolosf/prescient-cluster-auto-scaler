@@ -19,6 +19,7 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
 
 data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long)
@@ -32,6 +33,9 @@ interface IScalerStrategy {
 }
 
 class ScalerStrategy() : IScalerStrategy {
+    companion object {
+        private val LOG: Logger = Logger.getLogger(ScalerStrategy::class.java)
+    }
     override fun calculateScaleFactor(currentScaleUpFactor: Int,
                                       totalAvailable: Resources,
                                       asgOneNodeCapacity: Resources,
@@ -54,6 +58,7 @@ class ScalerStrategy() : IScalerStrategy {
         ).toInt()
 
         if (onlyAddNodes && desiredNewNodes < 0) {
+            LOG.warn("Only add nodes never delete nodes enabled - running ${abs(desiredNewNodes)} more nodes than necessary")
             return 0
         }
 
@@ -107,6 +112,7 @@ class AppMain {
                 LOG.info("AutoScalingGroup Single Node Capacity: $asgOneNodeCapacity")
                 LOG.info("DRY RUN mode: $dryRun")
                 LOG.info("Scale factor (Number of nodes to have ready for scheduling): $currentScaleUpFactor")
+                LOG.info("Only add new nodes never delete nodes: $onlyAddNodes")
                 LOG.info("Wait time between scaling events in minutes: $waitTimeBetweenScalingInMinutes")
                 LOG.info("AWS Region: $awsRegion")
                 LOG.info("AWS ASG: $awsAsgName")
