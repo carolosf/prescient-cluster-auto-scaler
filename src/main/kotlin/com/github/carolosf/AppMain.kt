@@ -198,6 +198,9 @@ class AppMain {
             )
 
             val scalerStrategy = ScalerStrategy()
+            LOG.info("Total requested resources: $totalRequested")
+            LOG.info("Total available resources: $totalAvailable")
+
             val scaleUp =
                 scalerStrategy.calculateScaleFactor(currentScaleUpFactor, totalAvailable, asgOneNodeCapacity)
             return ScaleUpResponse(scaleUp, nodeNames.count())
@@ -293,6 +296,7 @@ class AppMain {
             it: DefaultKubernetesClient,
             node: String?
         ) = it.pods()
+            .inAnyNamespace()
             .withField("spec.nodeName", node)
             .withoutField("status.phase", "Succeeded")
             .withoutField("status.phase", "Failed").list().items
