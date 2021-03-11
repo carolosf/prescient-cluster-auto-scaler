@@ -1,6 +1,8 @@
 # prescient-cluster-auto-scaler project
 
-This project scales kubernetes clusters automatically based on time of day and a pre-configured predicted demand.
+This project scales kubernetes clusters automatically so that you always have at least x times the resources you need available.
+This is useful for developer preview environments.
+This project doesn't scale down nodes only grows the number of nodes in the auto scaling group.
 
 This project uses Quarkus, the Supersonic Subatomic Java Framework.
 
@@ -25,6 +27,101 @@ If you want to learn more about Quarkus, please visit its website: https://quark
     ]
 }
 ```
+
+## Environment variables
+| Name        | Default | Description |
+| :---        | :---    | :---        |
+|DRY_RUN      | true    | If true no autoscaling will actually occur, log will say DRY RUN on setting autoscaler desired capacity |
+|NODE_CPU     | 8       | Available CPU of one node in your auto scaling group in CPU cores or millicpus when suffixed with m |
+|NODE_MEMORY  | 16323915776  | Available memory in bytes of one node in your autoscaling group (supported values Ki etc. of Quantity type - use `kubectl describe node` check under node capacity to see what value you should use )  |
+|NODE_PODS     | 110 | How many pods a node in your autoscaling group can support - no support for pods per core for now |
+|WAIT_TIME_IN_MINUTES | 10 | How frequently prescient cluster autoscaler should try to calculate used resources and scale up |
+|FILTER_OUT_TAINTED_NODES | true | Tainted nodes are harder to calculate resources for - so this will ignore tainted nodes and their pods|
+|ONLY_ADD_NODES | true | Prescient cluster autoscaler doesn't try to reschedule pods when a node is terminating - so this makes sure it doesn't try make the autoscaling group smaller, it will only add new nodes to the autoscaling group never delete nodes  |
+|AWS_REGION  | eu-west-2 | Currently only supports AWS cloud provider autoscaling groups so this sets the AWS region of your autoscaling group |
+|AWS_ASG_NAME  | asgmytest | This is the name of the autoscaling group to scale |
+
+## Sample Kubernetes Cluster Role and Binding
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prescient-cluster-autoscaler
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - pods
+    verbs:
+    - watch
+    - list
+    - get
+```
+```
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prescient-cluster-autoscaler
+  namespace: kube-system
+```
+```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prescient-cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prescient-cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: prescient-cluster-autoscaler
+    namespace: kube-system
+```
+```
+apiVersion: {{ template "deployment.apiVersion" . }}
+kind: Deployment
+metadata:
+  name: prescient-cluster-autoscaler
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prescient-cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app: prescient-cluster-autoscaler
+    spec:
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: prescient-cluster-autoscaler
+          image: carolosf/prescient-cluster-autoscaler
+          env:
+            - name: AWS_ASG_NAME
+              value: theNameOfMyAWSASG
+            - name: AWS_REGION
+              value: eu-west-2
+            - name: DRY_RUN
+              value: "true"
+            - name: FILTER_OUT_TAINTED_NODES
+              value: "true"
+            - name: NODE_CPU
+              value: "16"
+            - name: NODE_MEMORY
+              value: 64645380Ki
+            - name: NODE_PODS
+              value: "110"
+            - name: SCALE_FACTOR
+              value: 10
+            - name: WAIT_TIME_IN_MINUTES
+              value: 10
+            - name: ONLY_ADD_NODES
+              value: true
+```
+You need to create a namespace or install in kube-system
 
 ## Running the application in dev mode
 

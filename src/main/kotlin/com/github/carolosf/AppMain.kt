@@ -113,9 +113,11 @@ class AppMain {
 
                 while (active.get()) {
                     client.use {
+                        LOG.info("Start aggregating resources")
                         val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
-
+                        LOG.info("Start ASG scaling")
                         asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
+                        LOG.info("Finished ASG scaling")
                     }
                     WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
                 }
