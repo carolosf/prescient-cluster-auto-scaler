@@ -335,7 +335,7 @@ class AppMain {
             LOG.info("Current node count: $currentNodeCount")
             LOG.info("Suggested scale up count: $scaleUp")
 
-            val desiredCapacity = currentNodeCount + scaleUp
+            val desiredCapacity = currentDesiredCapacity + scaleUp
             if (!dryRun && desiredCapacity != currentDesiredCapacity) {
                 LOG.info("Setting desired capacity : $desiredCapacity")
                 autoscaling.setDesiredCapacity(
