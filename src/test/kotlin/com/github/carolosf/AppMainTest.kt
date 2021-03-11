@@ -10,7 +10,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             2,
             Resources(BigDecimal(0), BigDecimal(0), 0),
-            Resources(BigDecimal(4000), BigDecimal(1000), 100)
+            Resources(BigDecimal(4000), BigDecimal(1000), 100),
+            false
         )
         Assertions.assertEquals(2, scaleFactor)
     }
@@ -20,7 +21,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             2,
             Resources(BigDecimal(2000), BigDecimal(990000), 990000),
-            Resources(BigDecimal(4000), BigDecimal(1000), 100)
+            Resources(BigDecimal(4000), BigDecimal(1000), 100),
+            false
         )
         Assertions.assertEquals(1, scaleFactor)
     }
@@ -30,7 +32,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             2,
             Resources(BigDecimal(4000), BigDecimal(990000),990000),
-            Resources(BigDecimal(4000), BigDecimal(1000), 100)
+            Resources(BigDecimal(4000), BigDecimal(1000), 100),
+            false
         )
         Assertions.assertEquals(1, scaleFactor)
     }
@@ -40,7 +43,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             8,
             Resources(BigDecimal(4000), BigDecimal(990000), 990000),
-            Resources(BigDecimal(4000), BigDecimal(1000), 100)
+            Resources(BigDecimal(4000), BigDecimal(1000), 100),
+            false
         )
         Assertions.assertEquals(7, scaleFactor)
     }
@@ -50,7 +54,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             2,
             Resources(BigDecimal(990000), BigDecimal(2000), 990000),
-            Resources(BigDecimal(1000), BigDecimal(4000), 100)
+            Resources(BigDecimal(1000), BigDecimal(4000), 100),
+            false
         )
         Assertions.assertEquals(1, scaleFactor)
     }
@@ -60,7 +65,8 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             2,
             Resources(BigDecimal(990000), BigDecimal(4000), 990000),
-            Resources(BigDecimal(1000), BigDecimal(4000), 100)
+            Resources(BigDecimal(1000), BigDecimal(4000), 100),
+            false
         )
         Assertions.assertEquals(1, scaleFactor)
     }
@@ -70,8 +76,31 @@ class AppMainTest {
         val scaleFactor = ScalerStrategy().calculateScaleFactor(
             8,
             Resources(BigDecimal(990000), BigDecimal(4000), 999999),
-            Resources(BigDecimal(1000), BigDecimal(4000), 100)
+            Resources(BigDecimal(1000), BigDecimal(4000), 100),
+            false
         )
         Assertions.assertEquals(7, scaleFactor)
+    }
+
+    @Test
+    fun `ensure when too many resources delete nodes`() {
+        val scaleFactor = ScalerStrategy().calculateScaleFactor(
+            10,
+            Resources(BigDecimal(1000), BigDecimal(1000), 1000),
+            Resources(BigDecimal(1), BigDecimal(1), 1),
+            false
+        )
+        Assertions.assertEquals(-990, scaleFactor)
+    }
+
+    @Test
+    fun `ensure when too many resources only add nodes adds 0`() {
+        val scaleFactor = ScalerStrategy().calculateScaleFactor(
+            10,
+            Resources(BigDecimal(1000), BigDecimal(1000), 1000),
+            Resources(BigDecimal(1), BigDecimal(1), 1),
+            true
+        )
+        Assertions.assertEquals(0, scaleFactor)
     }
 }

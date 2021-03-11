@@ -26,15 +26,16 @@ data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long
 interface IScalerStrategy {
     fun calculateScaleFactor(currentScaleUpFactor: Int,
                              totalAvailable: Resources,
-                             asgOneNodeCapacity: Resources
+                             asgOneNodeCapacity: Resources,
+                             onlyAddNodes: Boolean
     ): Int
 }
 
 class ScalerStrategy() : IScalerStrategy {
     override fun calculateScaleFactor(currentScaleUpFactor: Int,
                                       totalAvailable: Resources,
-                                      asgOneNodeCapacity: Resources
-
+                                      asgOneNodeCapacity: Resources,
+                                      onlyAddNodes: Boolean
     ):Int {
         val desiredCpu = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.cpu)
         val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu, RoundingMode.HALF_DOWN)
@@ -45,10 +46,18 @@ class ScalerStrategy() : IScalerStrategy {
         val desiredPods = BigDecimal(currentScaleUpFactor).multiply(BigDecimal(asgOneNodeCapacity.pods))
         val scaleUpPods = desiredPods.minus(BigDecimal(totalAvailable.pods)).divide(BigDecimal(asgOneNodeCapacity.pods), RoundingMode.HALF_DOWN)
 
-        return max(max(
-            scaleUpCpu.setScale(0, RoundingMode.UP).longValueExact(),
-            scaleUpMemory.setScale(0, RoundingMode.UP).longValueExact()
-        ), scaleUpPods.setScale(0, RoundingMode.UP).longValueExact()).toInt()
+        val desiredNewNodes = max(
+            max(
+                scaleUpCpu.setScale(0, RoundingMode.UP).longValueExact(),
+                scaleUpMemory.setScale(0, RoundingMode.UP).longValueExact()
+            ), scaleUpPods.setScale(0, RoundingMode.UP).longValueExact()
+        ).toInt()
+
+        if (onlyAddNodes && desiredNewNodes < 0) {
+            return 0
+        }
+
+        return desiredNewNodes
     }
 
 }
@@ -80,6 +89,7 @@ class AppMain {
         private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 10
         private val dryRun = System.getenv("DRY_RUN")?.toBoolean() ?: true
         private val filterOutTaintedNodes = System.getenv("FILTER_OUT_TAINTED_NODES")?.toBoolean() ?: true
+        private val onlyAddNodes = System.getenv("ONLY_ADD_NODES")?.toBoolean() ?: true
 
         private val awsRegion = Region.of(System.getenv("AWS_REGION") ?: "eu-west-2")!! // TODO: throw illegal arg exception if not set
         private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
@@ -202,7 +212,9 @@ class AppMain {
             LOG.info("Total available resources: $totalAvailable")
 
             val scaleUp =
-                scalerStrategy.calculateScaleFactor(currentScaleUpFactor, totalAvailable, asgOneNodeCapacity)
+                scalerStrategy.calculateScaleFactor(
+                    currentScaleUpFactor, totalAvailable, asgOneNodeCapacity, onlyAddNodes
+                )
             return ScaleUpResponse(scaleUp, nodeNames.count())
         }
 
