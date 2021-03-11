@@ -79,6 +79,7 @@ class AppMain {
         private val currentScaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 10
         private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 10
         private val dryRun = System.getenv("DRY_RUN")?.toBoolean() ?: true
+        private val filterOutTaintedNodes = System.getenv("FILTER_OUT_TAINTED_NODES")?.toBoolean() ?: true
 
         private val awsRegion = Region.of(System.getenv("AWS_REGION") ?: "eu-west-2")!! // TODO: throw illegal arg exception if not set
         private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
@@ -285,6 +286,7 @@ class AppMain {
                 .list()
                 .items
                 .filter {!(it?.spec?.unschedulable ?: false)}
+                .filter {!filterOutTaintedNodes || it?.spec?.taints?.isEmpty() ?: false}
                 .map { node -> node.metadata.name }
 
         private fun getNodeNonTerminatedPodList(
