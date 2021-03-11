@@ -67,7 +67,7 @@ class AppMain {
             get() {
                 return Resources(
                     getCpuAmount(
-                        Quantity.parse(System.getenv("NODE_CPU")?.toString() ?: "8000")
+                        Quantity.parse(System.getenv("NODE_CPU")?.toString() ?: "8")
                     ),
                     getMemAmount(
                         Quantity.parse(System.getenv("NODE_MEMORY")?.toString() ?: "16323915776")
@@ -93,6 +93,13 @@ class AppMain {
                 setUpShutdownHook()
                 val client = getAndConfigureKubernetesClient()
                 LOG.info("Starting prescient-cluster-auto-scaler")
+                LOG.info("AutoScalingGroup Single Node Capacity: $asgOneNodeCapacity")
+                LOG.info("DRY RUN mode: $dryRun")
+                LOG.info("Scale factor (Number of nodes to have ready for scheduling): $currentScaleUpFactor")
+                LOG.info("Wait time between scaling events in minutes: $waitTimeBetweenScalingInMinutes")
+                LOG.info("AWS Region: $awsRegion")
+                LOG.info("AWS ASG: $awsAsgName")
+
                 while (active.get()) {
                     client.use {
                         val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
