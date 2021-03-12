@@ -61,9 +61,20 @@ rules:
       - nodes
       - pods
     verbs:
-    - watch
-    - list
-    - get
+      - watch
+      - list
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - statefulsets
+    verbs:
+      - get
+      - watch
+      - list
+      - update
+      - patch
 ```
 ```
 apiVersion: v1

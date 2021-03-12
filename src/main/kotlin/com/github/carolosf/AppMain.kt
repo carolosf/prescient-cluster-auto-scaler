@@ -3,6 +3,7 @@ package com.github.carolosf
 import io.fabric8.kubernetes.api.model.NodeStatus
 import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.Quantity
+import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder
 import io.fabric8.kubernetes.client.ConfigBuilder
 import io.fabric8.kubernetes.client.DefaultKubernetesClient
 import io.quarkus.runtime.Quarkus
@@ -59,7 +60,7 @@ class AppMain {
         private val dailyDownScaleScaleDownPods = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_PODS")?.toBoolean() ?: true
         private val dailyDownScaleScaleDownNodes = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_NODES")?.toBoolean() ?: true
         private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
-        private val dailyDownScaleNamespaceIgnoreList = System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus"
+        private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus").split(",")
         private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
 
         @JvmStatic
@@ -86,18 +87,22 @@ class AppMain {
                 LOG.info("Daily down scale pod namespace ignore list: $dailyDownScaleNamespaceIgnoreList")
                 LOG.info("Daily down scale target node count: $dailyDownScaleNodeCount")
 
-                val client = getAndConfigureKubernetesClient()
+                val kubernetesClient = getAndConfigureKubernetesClient()
                 val autoscalingClient = AutoScalingClient.builder()
                     .region(awsRegion)
                     .build()
 
                 while (active.get()) {
                     LOG.info("Start aggregating resources")
-                    val scaleUpResponse = calculateScaleUpFactor(client, currentScaleUpFactor, asgOneNodeCapacity)
+                    val scaleUpResponse = calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
                     LOG.info("Start ASG scaling")
+                    val downScalingPodsMode = dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                    if (downScalingPodsMode) {
+                        LOG.info("Start Pod Scaling")
+                        scaleDownDeployments(kubernetesClient)
+                    }
 
                     LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
-
                     val downScalingNodesMode = dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
                     if (downScalingNodesMode) {
                         LOG.info("In downscale window start scaling down nodes")
@@ -113,6 +118,39 @@ class AppMain {
                 }
                 Quarkus.waitForExit()
                 return 0
+            }
+
+            private fun scaleDownDeployments(kubernetesClient: DefaultKubernetesClient) {
+                kubernetesClient.namespaces().list().items.forEach { ns ->
+                    if (dailyDownScaleNamespaceIgnoreList.contains(ns.metadata.name)) {
+                        LOG.info("Ignoring namespace: ${ns.metadata.name}")
+                        return@forEach
+                    }
+                    LOG.info("Scaling down namespace: ${ns.metadata.name}")
+                    val scaledDownDeployments = mutableListOf<String>()
+                    kubernetesClient.apps().deployments().inNamespace(ns.metadata.name).list().items.forEach {
+                        if (it.kind != "Deployment") {
+                            LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
+                            return@forEach
+                        }
+                        val logMessage = "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
+                        if (it.spec.replicas != 0) {
+                            if (dryRun) {
+                                LOG.debug("DRY RUN - $logMessage")
+                            } else {
+                                LOG.debug(logMessage)
+                                kubernetesClient.apps().deployments()
+                                    .inNamespace(it.metadata.namespace)
+                                    .withName(it.metadata.name)
+                                    .edit { d ->
+                                        DeploymentBuilder(d).editSpec().withReplicas(0).endSpec().build()
+                                    }
+                            }
+                            scaledDownDeployments.add(it.metadata.name)
+                        }
+                    }
+                    LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
+                }
             }
         }
 
