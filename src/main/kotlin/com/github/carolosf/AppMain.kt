@@ -18,10 +18,11 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long)
-
 data class ScaleUpResponse(val scaleUp: Int, val nodeCount: Int)
+data class AsgMinMaxDesired(val min: Int, val max: Int, val desired: Int)
 
 // TODO: This is still proof of concept stage, don't use this in production without testing and tidy up
 @QuarkusMain
@@ -95,14 +96,16 @@ class AppMain {
                     val scaleUpResponse = calculateScaleUpFactor(client, currentScaleUpFactor, asgOneNodeCapacity)
                     LOG.info("Start ASG scaling")
 
+                    LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
+
                     val downScalingNodesMode = dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
                     if (downScalingNodesMode) {
                         LOG.info("In downscale window start scaling down nodes")
                         LOG.warn("Pod downscaling not implemented yet")
-                        setAndCheckDesiredCapacity(dailyDownScaleNodeCount, autoscalingClient)
+                        asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
                     } else {
                         LOG.info("Not in downscale window")
-                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp, autoscalingClient)
+                        asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
                     }
                     LOG.info("Finished ASG scaling")
 
@@ -334,51 +337,64 @@ class AppMain {
             return Quantity.getAmountInBytes(q)
         }
 
+        // TODO: Move this into its own class
+        private fun asgAdditiveDesiredCapacityStrategy(scaleUp: Int, autoscaling: AutoScalingClient) {
+            val currentAsgStatus = getCurrentAwsAsgCapacity(autoscaling)
+            LOG.info("Current asg status: ${currentAsgStatus.desired}")
+            LOG.info("Suggested asg scale up count: $scaleUp")
 
+            val desiredCapacity = currentAsgStatus.desired + scaleUp
+            val targetDesiredCapacity = max(desiredCapacity, currentAsgStatus.min)
 
-        private fun asgDesiredCapacity(currentNodeCount: Int, scaleUp: Int, autoscaling: AutoScalingClient) {
-            val current = autoscaling.describeAutoScalingGroups(
-                DescribeAutoScalingGroupsRequest.builder()
-                    .autoScalingGroupNames(awsAsgName).build()
-            )
-
-            val currentDesiredCapacity = current.autoScalingGroups().first().desiredCapacity()
-            LOG.info("Current asg capacity: $currentDesiredCapacity")
-            LOG.info("Current node count: $currentNodeCount")
-            LOG.info("Suggested scale up count: $scaleUp")
-
-            val desiredCapacity = currentDesiredCapacity + scaleUp
-            if (!dryRun) {
-                if (desiredCapacity != currentDesiredCapacity) {
-                    setAndCheckDesiredCapacity(desiredCapacity, autoscaling)
-                } else {
-                    LOG.info("No change required already at desired capacity: $desiredCapacity")
-                }
+            if (targetDesiredCapacity != currentAsgStatus.desired) {
+                setAndCheckAWSAsgDesiredCapacity(targetDesiredCapacity, autoscaling)
             } else {
-                LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
+                LOG.info("No change required already at desired capacity: $desiredCapacity")
             }
         }
 
-        private fun setAndCheckDesiredCapacity(
-            desiredCapacity: Int,
-            autoscaling: AutoScalingClient
-        ) {
-            LOG.info("Setting desired capacity : $desiredCapacity")
-            autoscaling.setDesiredCapacity(
-                SetDesiredCapacityRequest.builder()
-                    .autoScalingGroupName(awsAsgName)
-                    .desiredCapacity(desiredCapacity)
-                    .build()
-            )
-            // Check our updates
-            val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
+        private fun asgTargetDesiredCapacityStrategy(desiredCapacity: Int, autoscaling: AutoScalingClient) {
+            val currentAsgStatus = getCurrentAwsAsgCapacity(autoscaling)
+            LOG.info("Current asg status: $currentAsgStatus")
+            val targetDesiredCapacity = max(desiredCapacity, currentAsgStatus.min)
+            LOG.info("Target Desired Capacity: $targetDesiredCapacity")
+
+            if (targetDesiredCapacity != currentAsgStatus.desired) {
+                setAndCheckAWSAsgDesiredCapacity(targetDesiredCapacity, autoscaling)
+            } else {
+                LOG.info("No change required already at desired capacity: $desiredCapacity")
+            }
+        }
+
+        private fun getCurrentAwsAsgCapacity(autoscaling: AutoScalingClient): AsgMinMaxDesired {
+            val data = autoscaling.describeAutoScalingGroups(
                 DescribeAutoScalingGroupsRequest.builder()
                     .autoScalingGroupNames(awsAsgName).build()
-            ).autoScalingGroups().first().desiredCapacity()
-            LOG.info("Updated desired capacity: $updatedDesiredCapacity")
+            ).autoScalingGroups().first()
+            return AsgMinMaxDesired(data.minSize(), data.maxSize(), data.desiredCapacity())
+        }
 
-            if (desiredCapacity != updatedDesiredCapacity) {
-                LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
+        private fun setAndCheckAWSAsgDesiredCapacity(
+            desiredCapacity: Int,
+            autoscalingClient: AutoScalingClient
+        ) {
+            if (dryRun) {
+                LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
+            } else {
+                LOG.info("Setting desired capacity : $desiredCapacity")
+                autoscalingClient.setDesiredCapacity(
+                    SetDesiredCapacityRequest.builder()
+                        .autoScalingGroupName(awsAsgName)
+                        .desiredCapacity(desiredCapacity)
+                        .build()
+                )
+                // Check our updates
+                val updatedAsgStatus = getCurrentAwsAsgCapacity(autoscalingClient)
+                LOG.info("Updated desired capacity: $updatedAsgStatus")
+
+                if (desiredCapacity != updatedAsgStatus.desired) {
+                    LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedAsgStatus")
+                }
             }
         }
     }
