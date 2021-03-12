@@ -14,58 +14,12 @@ import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
 import software.amazon.awssdk.services.autoscaling.model.SetDesiredCapacityRequest
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
-import kotlin.math.max
 
 data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long)
-
-interface IScalerStrategy {
-    fun calculateScaleFactor(currentScaleUpFactor: Int,
-                             totalAvailable: Resources,
-                             asgOneNodeCapacity: Resources,
-                             onlyAddNodes: Boolean
-    ): Int
-}
-
-class ScalerStrategy() : IScalerStrategy {
-    companion object {
-        private val LOG: Logger = Logger.getLogger(ScalerStrategy::class.java)
-    }
-    override fun calculateScaleFactor(currentScaleUpFactor: Int,
-                                      totalAvailable: Resources,
-                                      asgOneNodeCapacity: Resources,
-                                      onlyAddNodes: Boolean
-    ):Int {
-        val desiredCpu = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.cpu)
-        val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu, RoundingMode.HALF_DOWN)
-
-        val desiredMemory = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.memory)
-        val scaleUpMemory = desiredMemory.minus(totalAvailable.memory).divide(asgOneNodeCapacity.memory, RoundingMode.HALF_DOWN)
-
-        val desiredPods = BigDecimal(currentScaleUpFactor).multiply(BigDecimal(asgOneNodeCapacity.pods))
-        val scaleUpPods = desiredPods.minus(BigDecimal(totalAvailable.pods)).divide(BigDecimal(asgOneNodeCapacity.pods), RoundingMode.HALF_DOWN)
-
-        val desiredNewNodes = max(
-            max(
-                scaleUpCpu.setScale(0, RoundingMode.UP).longValueExact(),
-                scaleUpMemory.setScale(0, RoundingMode.UP).longValueExact()
-            ), scaleUpPods.setScale(0, RoundingMode.UP).longValueExact()
-        ).toInt()
-
-        if (onlyAddNodes && desiredNewNodes < 0) {
-            LOG.warn("Only add nodes never delete nodes enabled - running ${abs(desiredNewNodes)} more nodes than necessary")
-            return 0
-        }
-
-        return desiredNewNodes
-    }
-
-}
 
 data class ScaleUpResponse(val scaleUp: Int, val nodeCount: Int)
 
@@ -75,7 +29,7 @@ class AppMain {
     companion object {
         private val LOG: Logger = Logger.getLogger(AppMain::class.java)
         val active = AtomicBoolean(true)
-        private const val cpuMConstant = 1000 // TODO: this is how many m there are per core need to find the code for this and make sure
+        private const val CPU_M_CONSTANT = 1000 // TODO: this is how many m there are per core need to find the code for this and make sure
 
         private val asgOneNodeCapacity: Resources
             get() {
@@ -90,14 +44,22 @@ class AppMain {
                 )
             }
 
-        private val currentScaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 10
-        private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 10
+        // TODO: Move these somewhere nicer
+        private val currentScaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 1
+        private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 5
         private val dryRun = System.getenv("DRY_RUN")?.toBoolean() ?: true
         private val filterOutTaintedNodes = System.getenv("FILTER_OUT_TAINTED_NODES")?.toBoolean() ?: true
         private val onlyAddNodes = System.getenv("ONLY_ADD_NODES")?.toBoolean() ?: true
 
         private val awsRegion = Region.of(System.getenv("AWS_REGION") ?: "eu-west-2")!! // TODO: throw illegal arg exception if not set
         private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
+
+        private val dailyDownScalePodsAndNodesTimeRange = DailyTimeRange.parse(System.getenv("DAILY_DOWNSCALE_PODS_AND_NODES_TIME_RANGE") ?: "20:00-07:00")
+        private val dailyDownScaleScaleDownPods = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_PODS")?.toBoolean() ?: true
+        private val dailyDownScaleScaleDownNodes = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_NODES")?.toBoolean() ?: true
+        private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
+        private val dailyDownScaleNamespaceIgnoreList = System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus"
+        private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
 
         @JvmStatic
         fun main(vararg args: String) {
@@ -107,7 +69,6 @@ class AppMain {
             @Throws(Exception::class)
             override fun run(vararg args: String): Int {
                 setUpShutdownHook()
-                val client = getAndConfigureKubernetesClient()
                 LOG.info("Starting prescient-cluster-auto-scaler")
                 LOG.info("AutoScalingGroup Single Node Capacity: $asgOneNodeCapacity")
                 LOG.info("DRY RUN mode: $dryRun")
@@ -117,14 +78,34 @@ class AppMain {
                 LOG.info("AWS Region: $awsRegion")
                 LOG.info("AWS ASG: $awsAsgName")
 
+                LOG.info("Daily down scale time: $dailyDownScalePodsAndNodesTimeRange")
+                LOG.info("Daily down scale pods enabled: $dailyDownScaleScaleDownPods")
+                LOG.info("Daily down scale nodes enabled: $dailyDownScaleScaleDownNodes")
+                LOG.info("Daily down scale pod scaling thread count: $dailyDownScalePodsThreadCount")
+                LOG.info("Daily down scale pod namespace ignore list: $dailyDownScaleNamespaceIgnoreList")
+                LOG.info("Daily down scale target node count: $dailyDownScaleNodeCount")
+
+                val client = getAndConfigureKubernetesClient()
+                val autoscalingClient = AutoScalingClient.builder()
+                    .region(awsRegion)
+                    .build()
+
                 while (active.get()) {
-                    client.use {
-                        LOG.info("Start aggregating resources")
-                        val scaleUpResponse = calculateScaleUpFactor(it, currentScaleUpFactor, asgOneNodeCapacity)
-                        LOG.info("Start ASG scaling")
-                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp)
-                        LOG.info("Finished ASG scaling")
+                    LOG.info("Start aggregating resources")
+                    val scaleUpResponse = calculateScaleUpFactor(client, currentScaleUpFactor, asgOneNodeCapacity)
+                    LOG.info("Start ASG scaling")
+
+                    val downScalingNodesMode = dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                    if (downScalingNodesMode) {
+                        LOG.info("In downscale window start scaling down nodes")
+                        LOG.warn("Pod downscaling not implemented yet")
+                        setAndCheckDesiredCapacity(dailyDownScaleNodeCount, autoscalingClient)
+                    } else {
+                        LOG.info("Not in downscale window")
+                        asgDesiredCapacity(scaleUpResponse.nodeCount, scaleUpResponse.scaleUp, autoscalingClient)
                     }
+                    LOG.info("Finished ASG scaling")
+
                     WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
                 }
                 Quarkus.waitForExit()
@@ -293,14 +274,14 @@ class AppMain {
 
         private fun getAllocatableCpuFromNodeStatus(nodeStatus: NodeStatus?) =
             (nodeStatus?.allocatable?.get("cpu")?.amount?.toInt()?.let { BigDecimal(it) }
-                ?: BigDecimal.ZERO) * BigDecimal(cpuMConstant)
+                ?: BigDecimal.ZERO) * BigDecimal(CPU_M_CONSTANT)
 
         private fun getMemoryCapacityFromNodeStatus(nodeStatus: NodeStatus?) =
             getMemAmount(nodeStatus?.capacity?.get("memory"))
 
         private fun getCpuCapacityFromNodeStatus(nodeStatus: NodeStatus?) =
             (nodeStatus?.capacity?.get("cpu")?.amount?.toInt()?.let { BigDecimal(it) } ?: BigDecimal.ZERO) * BigDecimal(
-                cpuMConstant
+                CPU_M_CONSTANT
             )
 
         private fun getSchedulableWorkerNodes(it: DefaultKubernetesClient) =
@@ -334,7 +315,7 @@ class AppMain {
 
             return when (q.format) {
                 "" -> {
-                    BigDecimal(q.amount.toInt() * cpuMConstant)
+                    BigDecimal(q.amount.toInt() * CPU_M_CONSTANT)
                 }
                 "m" -> {
                     BigDecimal(q.amount.toInt())
@@ -353,11 +334,9 @@ class AppMain {
             return Quantity.getAmountInBytes(q)
         }
 
-        private fun asgDesiredCapacity(currentNodeCount: Int, scaleUp: Int) {
-            val autoscaling = AutoScalingClient.builder()
-                .region(awsRegion)
-                .build()
 
+
+        private fun asgDesiredCapacity(currentNodeCount: Int, scaleUp: Int, autoscaling: AutoScalingClient) {
             val current = autoscaling.describeAutoScalingGroups(
                 DescribeAutoScalingGroupsRequest.builder()
                     .autoScalingGroupNames(awsAsgName).build()
@@ -371,28 +350,35 @@ class AppMain {
             val desiredCapacity = currentDesiredCapacity + scaleUp
             if (!dryRun) {
                 if (desiredCapacity != currentDesiredCapacity) {
-                    LOG.info("Setting desired capacity : $desiredCapacity")
-                    autoscaling.setDesiredCapacity(
-                        SetDesiredCapacityRequest.builder()
-                            .autoScalingGroupName(awsAsgName)
-                            .desiredCapacity(desiredCapacity)
-                            .build()
-                    )
-                    // Check our updates
-                    val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
-                        DescribeAutoScalingGroupsRequest.builder()
-                            .autoScalingGroupNames(awsAsgName).build()
-                    ).autoScalingGroups().first().desiredCapacity()
-                    LOG.info("Updated desired capacity: $updatedDesiredCapacity")
-
-                    if (desiredCapacity != updatedDesiredCapacity) {
-                        LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
-                    }
+                    setAndCheckDesiredCapacity(desiredCapacity, autoscaling)
                 } else {
                     LOG.info("No change required already at desired capacity: $desiredCapacity")
                 }
             } else {
                 LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
+            }
+        }
+
+        private fun setAndCheckDesiredCapacity(
+            desiredCapacity: Int,
+            autoscaling: AutoScalingClient
+        ) {
+            LOG.info("Setting desired capacity : $desiredCapacity")
+            autoscaling.setDesiredCapacity(
+                SetDesiredCapacityRequest.builder()
+                    .autoScalingGroupName(awsAsgName)
+                    .desiredCapacity(desiredCapacity)
+                    .build()
+            )
+            // Check our updates
+            val updatedDesiredCapacity = autoscaling.describeAutoScalingGroups(
+                DescribeAutoScalingGroupsRequest.builder()
+                    .autoScalingGroupNames(awsAsgName).build()
+            ).autoScalingGroups().first().desiredCapacity()
+            LOG.info("Updated desired capacity: $updatedDesiredCapacity")
+
+            if (desiredCapacity != updatedDesiredCapacity) {
+                LOG.error("Expected desired capacity of $desiredCapacity but only got $updatedDesiredCapacity")
             }
         }
     }

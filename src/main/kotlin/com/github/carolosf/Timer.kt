@@ -11,7 +11,7 @@ interface IClockGateway {
 }
 
 class JavaDateTimeClockGateway : IClockGateway {
-    override fun getDateTime(): ZonedDateTime = ZonedDateTime.now(ZoneId.of("UTC"))
+    override fun getDateTime(): ZonedDateTime = ZonedDateTime.now()
 }
 
 interface IWaitUntilGateway {

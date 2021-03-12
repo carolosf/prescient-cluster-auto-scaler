@@ -35,11 +35,18 @@ If you want to learn more about Quarkus, please visit its website: https://quark
 |NODE_CPU     | 8       | Available CPU of one node in your auto scaling group in CPU cores or millicpus when suffixed with m |
 |NODE_MEMORY  | 16323915776  | Available memory in bytes of one node in your autoscaling group (supported values Ki etc. of Quantity type - use `kubectl describe node` check under node capacity to see what value you should use )  |
 |NODE_PODS     | 110 | How many pods a node in your autoscaling group can support - no support for pods per core for now |
-|WAIT_TIME_IN_MINUTES | 10 | How frequently prescient cluster autoscaler should try to calculate used resources and scale up |
+|WAIT_TIME_IN_MINUTES | 5 | How frequently prescient cluster autoscaler should try to calculate used resources and scale up. This should be larger than any scale time protection you have |
+|SCALE_FACTOR| 1 | How many extra nodes prescient cluster autoscaler will try to have always available for the cluster to use|
 |FILTER_OUT_TAINTED_NODES | true | Tainted nodes are harder to calculate resources for - so this will ignore tainted nodes and their pods|
 |ONLY_ADD_NODES | true | Prescient cluster autoscaler doesn't try to reschedule pods when a node is terminating - so this makes sure it doesn't try make the autoscaling group smaller, it will only add new nodes to the autoscaling group never delete nodes  |
 |AWS_REGION  | eu-west-2 | Currently only supports AWS cloud provider autoscaling groups so this sets the AWS region of your autoscaling group |
 |AWS_ASG_NAME  | asgmytest | This is the name of the autoscaling group to scale |
+|DAILY_DOWNSCALE_TIME_RANGE| 20:00-07:00 | This is the daily time that prescient cluster autoscaler will try downscale pods and then downscale nodes. |
+|DAILY_DOWNSCALE_SCALE_DOWN_PODS| true | This will attempt to scale down pods to 0 in all namespaces except those in DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST |
+|DAILY_DOWNSCALE_PODS_THREAD_COUNT| 20 | Number of namespaces to scale in parallel |
+|DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST| "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus" | Ignore scaling down pods in these namespaces separate namespaces with comma character |
+|DAILY_DOWNSCALE_SCALE_DOWN_NODES| true | This will attempt to scale down nodes it won't drain and cordon nodes for deletion it will just set the autoscaling group to the specified number of nodes |
+|DAILY_DOWNSCALE_NODE_COUNT| 3 | This is the target number of nodes when downscaling occurs for the day. If lower than autoscaling group minimum, will honor ASG minimum |
 
 ## Sample Kubernetes Cluster Role and Binding
 ```
