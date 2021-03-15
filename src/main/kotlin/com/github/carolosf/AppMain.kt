@@ -117,7 +117,6 @@ class AppMain {
                     val downScalingNodesMode = dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
                     if (downScalingNodesMode) {
                         LOG.info("In downscale window start scaling down nodes")
-                        LOG.warn("Pod downscaling not implemented yet")
                         asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
                     } else {
                         LOG.info("Not in downscale window")
