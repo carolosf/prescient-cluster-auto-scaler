@@ -10,8 +10,8 @@ interface IClockGateway {
     fun getDateTime(): ZonedDateTime
 }
 
-class JavaDateTimeClockGateway : IClockGateway {
-    override fun getDateTime(): ZonedDateTime = ZonedDateTime.now()
+class JavaDateTimeClockGateway(private val zoneId: ZoneId = ZoneId.systemDefault()) : IClockGateway {
+    override fun getDateTime(): ZonedDateTime = ZonedDateTime.now(zoneId)
 }
 
 interface IWaitUntilGateway {

@@ -15,6 +15,7 @@ import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
 import software.amazon.awssdk.services.autoscaling.model.SetDesiredCapacityRequest
 import java.math.BigDecimal
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
@@ -56,7 +57,12 @@ class AppMain {
         private val awsRegion = Region.of(System.getenv("AWS_REGION") ?: "eu-west-2")!! // TODO: throw illegal arg exception if not set
         private val awsAsgName = System.getenv("AWS_ASG_NAME") ?: "asgmytest" // TODO: throw illegal arg exception if not set
 
-        private val dailyDownScalePodsAndNodesTimeRange = DailyTimeRange.parse(System.getenv("DAILY_DOWNSCALE_PODS_AND_NODES_TIME_RANGE") ?: "20:00-07:00")
+        private val timeZoneId = try {
+            ZoneId.of(System.getenv("TIME_ZONE_ID"))
+        } catch (e: Exception) {null} ?: ZoneId.systemDefault()
+        val clockGateway = JavaDateTimeClockGateway(timeZoneId)
+
+        private val dailyDownScalePodsAndNodesTimeRange = DailyTimeRange.parse(System.getenv("DAILY_DOWNSCALE_PODS_AND_NODES_TIME_RANGE") ?: "20:00-07:00", clockGateway)
         private val dailyDownScaleScaleDownPods = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_PODS")?.toBoolean() ?: true
         private val dailyDownScaleScaleDownNodes = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_NODES")?.toBoolean() ?: true
         private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
@@ -87,6 +93,8 @@ class AppMain {
                 LOG.info("Daily down scale pod namespace ignore list: $dailyDownScaleNamespaceIgnoreList")
                 LOG.info("Daily down scale target node count: $dailyDownScaleNodeCount")
 
+                LOG.info("Timezone: $timeZoneId")
+
                 val kubernetesClient = getAndConfigureKubernetesClient()
                 val autoscalingClient = AutoScalingClient.builder()
                     .region(awsRegion)
@@ -114,7 +122,7 @@ class AppMain {
                     }
                     LOG.info("Finished ASG scaling")
 
-                    WaitUntilGateway().waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
+                    WaitUntilGateway(clockGateway).waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
                 }
                 Quarkus.waitForExit()
                 return 0

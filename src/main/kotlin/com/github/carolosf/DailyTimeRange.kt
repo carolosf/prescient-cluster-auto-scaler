@@ -4,7 +4,7 @@ import java.time.ZonedDateTime
 
 data class DailyTimeRange(val start: DailyTime, val end: DailyTime, val clockGateway: IClockGateway = JavaDateTimeClockGateway()) {
     companion object {
-        fun parse(timeRange: String): DailyTimeRange {
+        fun parse(timeRange: String, clockGateway: IClockGateway = JavaDateTimeClockGateway()): DailyTimeRange {
             val split = timeRange.split("-")
             if (split.count() != 2) {
                 throw IllegalArgumentException("Missing - between 24 hour time ranges $timeRange")
@@ -12,7 +12,7 @@ data class DailyTimeRange(val start: DailyTime, val end: DailyTime, val clockGat
             val start = split.first()
             val end = split.last()
 
-            return DailyTimeRange(DailyTime.parse(start), DailyTime.parse(end));
+            return DailyTimeRange(DailyTime.parse(start), DailyTime.parse(end), clockGateway);
         }
 
     }
