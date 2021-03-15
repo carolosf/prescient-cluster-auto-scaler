@@ -59,6 +59,7 @@ rules:
   - apiGroups:
       - ""
     resources:
+      - namespaces
       - nodes
       - pods
     verbs:
@@ -69,7 +70,6 @@ rules:
       - apps
     resources:
       - deployments
-      - statefulsets
     verbs:
       - get
       - watch
