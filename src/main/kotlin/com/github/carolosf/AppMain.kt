@@ -9,6 +9,7 @@ import io.fabric8.kubernetes.client.DefaultKubernetesClient
 import io.quarkus.runtime.Quarkus
 import io.quarkus.runtime.QuarkusApplication
 import io.quarkus.runtime.annotations.QuarkusMain
+import kotlinx.coroutines.*
 import org.jboss.logging.Logger
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.autoscaling.AutoScalingClient
@@ -18,6 +19,7 @@ import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -107,7 +109,8 @@ class AppMain {
                     val downScalingPodsMode = dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
                     if (downScalingPodsMode) {
                         LOG.info("Start Pod Scaling")
-                        scaleDownDeployments(kubernetesClient)
+                        val coroutineDispatcher = Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
+                        scaleDownDeployments(kubernetesClient, coroutineDispatcher)
                     }
 
                     LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
@@ -128,36 +131,44 @@ class AppMain {
                 return 0
             }
 
-            private fun scaleDownDeployments(kubernetesClient: DefaultKubernetesClient) {
-                kubernetesClient.namespaces().list().items.forEach { ns ->
-                    if (dailyDownScaleNamespaceIgnoreList.contains(ns.metadata.name)) {
-                        LOG.info("Ignoring namespace: ${ns.metadata.name}")
-                        return@forEach
-                    }
-                    LOG.info("Scaling down namespace: ${ns.metadata.name}")
-                    val scaledDownDeployments = mutableListOf<String>()
-                    kubernetesClient.apps().deployments().inNamespace(ns.metadata.name).list().items.forEach {
-                        if (it.kind != "Deployment") {
-                            LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
+            private fun scaleDownDeployments(
+                kubernetesClient: DefaultKubernetesClient,
+                coroutineDispatcher: ExecutorCoroutineDispatcher
+            ) {
+                CoroutineScope(coroutineDispatcher).launch {
+                    kubernetesClient.namespaces().list().items.forEach { ns ->
+                        if (dailyDownScaleNamespaceIgnoreList.contains(ns.metadata.name)) {
+                            LOG.info("Ignoring namespace: ${ns.metadata.name}")
                             return@forEach
                         }
-                        val logMessage = "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
-                        if (it.spec.replicas != 0) {
-                            if (dryRun) {
-                                LOG.debug("DRY RUN - $logMessage")
-                            } else {
-                                LOG.debug(logMessage)
-                                kubernetesClient.apps().deployments()
-                                    .inNamespace(it.metadata.namespace)
-                                    .withName(it.metadata.name)
-                                    .edit { d ->
-                                        DeploymentBuilder(d).editSpec().withReplicas(0).endSpec().build()
+                        LOG.info("Scaling down namespace: ${ns.metadata.name}")
+                        val scaledDownDeployments = mutableListOf<String>()
+
+                        kubernetesClient.apps().deployments().inNamespace(ns.metadata.name).list().items.forEach {
+                            async {
+                                if (it.kind != "Deployment") {
+                                    LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
+                                    return@async
+                                }
+                                val logMessage = "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
+                                if (it.spec.replicas != 0) {
+                                    if (dryRun) {
+                                        LOG.debug("DRY RUN - $logMessage")
+                                    } else {
+                                        LOG.debug(logMessage)
+                                        kubernetesClient.apps().deployments()
+                                            .inNamespace(it.metadata.namespace)
+                                            .withName(it.metadata.name)
+                                            .edit { d ->
+                                                DeploymentBuilder(d).editSpec().withReplicas(0).endSpec().build()
+                                            }
                                     }
+                                    scaledDownDeployments.add(it.metadata.name)
+                                }
                             }
-                            scaledDownDeployments.add(it.metadata.name)
                         }
+                        LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
                     }
-                    LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
                 }
             }
         }
