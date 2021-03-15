@@ -3,7 +3,6 @@ package com.github.carolosf
 import io.fabric8.kubernetes.api.model.NodeStatus
 import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.Quantity
-import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder
 import io.fabric8.kubernetes.client.ConfigBuilder
 import io.fabric8.kubernetes.client.DefaultKubernetesClient
 import io.quarkus.runtime.Quarkus
@@ -19,6 +18,7 @@ import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
+import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -135,16 +135,22 @@ class AppMain {
                 kubernetesClient: DefaultKubernetesClient,
                 coroutineDispatcher: ExecutorCoroutineDispatcher
             ) {
-                CoroutineScope(coroutineDispatcher).launch {
-                    kubernetesClient.namespaces().list().items.forEach { ns ->
-                        if (dailyDownScaleNamespaceIgnoreList.contains(ns.metadata.name)) {
-                            LOG.info("Ignoring namespace: ${ns.metadata.name}")
-                            return@forEach
-                        }
-                        LOG.info("Scaling down namespace: ${ns.metadata.name}")
-                        val scaledDownDeployments = mutableListOf<String>()
+                val namespaces = kubernetesClient.namespaces().list().items
+                val ignoredNamespaces = namespaces.filter {dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
+                LOG.info("Ignoring namespaces: ${ignoredNamespaces.joinToString{ it.metadata.name }}")
+                val downscaleNamespaces = namespaces.filter {!dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
+                LOG.info("Downscaling namespaces: ${downscaleNamespaces.joinToString{ it.metadata.name }}")
 
-                        kubernetesClient.apps().deployments().inNamespace(ns.metadata.name).list().items.forEach {
+                val podsToScaleByNamespace = downscaleNamespaces.map {
+                    it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
+                }.toMap()
+
+                CoroutineScope(coroutineDispatcher).launch {
+                    podsToScaleByNamespace.forEach { (ns, deps) ->
+                        LOG.info("Scaling down namespace: ${ns.metadata.name}")
+                        val scaledDownDeployments = Collections.synchronizedList<String>(mutableListOf())
+
+                        deps.map {
                             async {
                                 if (it.kind != "Deployment") {
                                     LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
@@ -159,14 +165,12 @@ class AppMain {
                                         kubernetesClient.apps().deployments()
                                             .inNamespace(it.metadata.namespace)
                                             .withName(it.metadata.name)
-                                            .edit { d ->
-                                                DeploymentBuilder(d).editSpec().withReplicas(0).endSpec().build()
-                                            }
+                                            .scale(0, true)
                                     }
                                     scaledDownDeployments.add(it.metadata.name)
                                 }
                             }
-                        }
+                        }.awaitAll()
                         LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
                     }
                 }
