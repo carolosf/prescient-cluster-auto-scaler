@@ -44,7 +44,7 @@ If you want to learn more about Quarkus, please visit its website: https://quark
 |DAILY_DOWNSCALE_TIME_RANGE| 20:00-07:00 | This is the daily time that prescient cluster autoscaler will try downscale pods and then downscale nodes. |
 |DAILY_DOWNSCALE_SCALE_DOWN_PODS| true | This will attempt to scale down pods to 0 in all namespaces except those in DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST |
 |DAILY_DOWNSCALE_PODS_THREAD_COUNT| 20 | Number of namespaces to scale in parallel |
-|DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST| "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus" | Ignore scaling down pods in these namespaces separate namespaces with comma character |
+|DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST| "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system" | Ignore scaling down pods in these namespaces separate namespaces with comma character |
 |DAILY_DOWNSCALE_SCALE_DOWN_NODES| true | This will attempt to scale down nodes it won't drain and cordon nodes for deletion it will just set the autoscaling group to the specified number of nodes |
 |DAILY_DOWNSCALE_NODE_COUNT| 3 | This is the target number of nodes when downscaling occurs for the day. If lower than autoscaling group minimum, will honor ASG minimum |
 |TIME_ZONE_ID | System Time Zone | This is the timezone to use for downscaling time range and other time operations. The default is whatever timezone the system is set to |

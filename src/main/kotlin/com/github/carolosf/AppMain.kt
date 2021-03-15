@@ -68,7 +68,7 @@ class AppMain {
         private val dailyDownScaleScaleDownPods = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_PODS")?.toBoolean() ?: true
         private val dailyDownScaleScaleDownNodes = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_NODES")?.toBoolean() ?: true
         private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
-        private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus").split(",")
+        private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system").split(",")
         private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
 
         @JvmStatic
