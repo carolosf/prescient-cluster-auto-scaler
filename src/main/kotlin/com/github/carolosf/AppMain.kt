@@ -144,16 +144,16 @@ class AppMain {
                     it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
                 }.toMap()
 
-                CoroutineScope(coroutineDispatcher).launch {
+                runBlocking(coroutineDispatcher) {
                     podsToScaleByNamespace.forEach { (ns, deps) ->
                         LOG.info("Scaling down namespace: ${ns.metadata.name}")
                         val scaledDownDeployments = Collections.synchronizedList<String>(mutableListOf())
 
                         deps.map {
-                            async {
+                            launch {
                                 if (it.kind != "Deployment") {
                                     LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
-                                    return@async
+                                    return@launch
                                 }
                                 val logMessage = "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
                                 if (it.spec.replicas != 0) {
@@ -169,7 +169,7 @@ class AppMain {
                                     scaledDownDeployments.add(it.metadata.name)
                                 }
                             }
-                        }.awaitAll()
+                        }.joinAll()
                         LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
                     }
                 }
