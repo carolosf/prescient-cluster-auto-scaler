@@ -73,7 +73,7 @@ class AppMain {
         private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system").split(",")
         private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
 
-        private val downscaleWeekendDaysList = (System.getenv("DOWNSCALE_WEEKEND_DAYS") ?: "SATURDAY,SUNDAY").split(",")
+        private val downscaleWeekendDaysList = (System.getenv("DOWNSCALE_WEEKEND_DAYS") ?: "SATURDAY,SUNDAY").toUpperCase().split(",")
 
         private val dailyBusyPeriod = System.getenv("DAILY_BUSY_PERIOD")?.toBoolean() ?: false
         private val dailyBusyPeriodTimeRange = DailyTimeRange.parse(System.getenv("DAILY_BUSY_PERIOD_TIME_RANGE") ?: "09:00-12:00", clockGateway)
