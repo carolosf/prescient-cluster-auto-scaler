@@ -47,7 +47,11 @@ If you want to learn more about Quarkus, please visit its website: https://quark
 |DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST| "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system" | Ignore scaling down pods in these namespaces separate namespaces with comma character |
 |DAILY_DOWNSCALE_SCALE_DOWN_NODES| true | This will attempt to scale down nodes it won't drain and cordon nodes for deletion it will just set the autoscaling group to the specified number of nodes |
 |DAILY_DOWNSCALE_NODE_COUNT| 3 | This is the target number of nodes when downscaling occurs for the day. If lower than autoscaling group minimum, will honor ASG minimum |
-|TIME_ZONE_ID | System Time Zone | This is the timezone to use for downscaling time range and other time operations. The default is whatever timezone the system is set to |
+|TIME_ZONE_ID | System Time Zone | This is the timezone to use for downscaling time range and other time operations. The default is whatever timezone the system is set to. Example format Europe/London. https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html |
+|DOWNSCALE_WEEKEND_DAYS|SATURDAY,SUNDAY|This downscales to DAILY_DOWNSCALE_NODE_COUNT on the weekend if these values are set|
+|DAILY_BUSY_PERIOD|false| This lets you set a different scaling factor on daily busy periods|
+|DAILY_BUSY_PERIOD_TIME_RANGE|09:00-12:00|This is the time range of the busy period|
+|DAILY_BUSY_PERIOD_SCALE_FACTOR|1|This is the scale factor of the busy period|
 
 ## Sample Kubernetes Cluster Role and Binding
 ```

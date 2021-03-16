@@ -103,4 +103,26 @@ class AppMainTest {
         )
         Assertions.assertEquals(0, scaleFactor)
     }
+
+    @Test
+    fun `ensure scale factor of 0 returns correct result`() {
+        val scaleFactor = ScalerStrategy().calculateScaleFactor(
+            0,
+            Resources(BigDecimal(990000), BigDecimal(4000), 999999),
+            Resources(BigDecimal(1000), BigDecimal(4000), 100),
+            false
+        )
+        Assertions.assertEquals(0, scaleFactor)
+    }
+
+    @Test
+    fun `ensure scale factor of negative returns correct result`() {
+        val scaleFactor = ScalerStrategy().calculateScaleFactor(
+            -1,
+            Resources(BigDecimal(990000), BigDecimal(4000), 999999),
+            Resources(BigDecimal(1000), BigDecimal(4000), 100),
+            false
+        )
+        Assertions.assertEquals(0, scaleFactor)
+    }
 }

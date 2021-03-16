@@ -15,6 +15,9 @@ class ScalerStrategy() : IScalerStrategy {
                                       asgOneNodeCapacity: Resources,
                                       onlyAddNodes: Boolean
     ):Int {
+        if (currentScaleUpFactor <= 0) {
+            return 0
+        }
         val desiredCpu = BigDecimal(currentScaleUpFactor).multiply(asgOneNodeCapacity.cpu)
         val scaleUpCpu = desiredCpu.minus(totalAvailable.cpu).divide(asgOneNodeCapacity.cpu, RoundingMode.HALF_DOWN)
 

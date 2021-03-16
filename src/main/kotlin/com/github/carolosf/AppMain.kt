@@ -50,7 +50,9 @@ class AppMain {
             }
 
         // TODO: Move these somewhere nicer
-        private val currentScaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 1
+        private val scaleUpFactor = System.getenv("SCALE_FACTOR")?.toInt() ?: 1
+        private var currentScaleUpFactor = scaleUpFactor
+
         private val waitTimeBetweenScalingInMinutes = System.getenv("WAIT_TIME_IN_MINUTES")?.toLong() ?: 5
         private val dryRun = System.getenv("DRY_RUN")?.toBoolean() ?: true
         private val filterOutTaintedNodes = System.getenv("FILTER_OUT_TAINTED_NODES")?.toBoolean() ?: true
@@ -70,6 +72,12 @@ class AppMain {
         private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
         private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system").split(",")
         private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
+
+        private val downscaleWeekendDaysList = (System.getenv("DOWNSCALE_WEEKEND_DAYS") ?: "SATURDAY,SUNDAY").split(",")
+
+        private val dailyBusyPeriod = System.getenv("DAILY_BUSY_PERIOD")?.toBoolean() ?: false
+        private val dailyBusyPeriodTimeRange = DailyTimeRange.parse(System.getenv("DAILY_BUSY_PERIOD_TIME_RANGE") ?: "09:00-12:00", clockGateway)
+        private val dailyBusyPeriodScaleUpFactor = System.getenv("DAILY_BUSY_PERIOD_SCALE_FACTOR")?.toInt() ?: 1
 
         @JvmStatic
         fun main(vararg args: String) {
@@ -95,6 +103,11 @@ class AppMain {
                 LOG.info("Daily down scale pod namespace ignore list: $dailyDownScaleNamespaceIgnoreList")
                 LOG.info("Daily down scale target node count: $dailyDownScaleNodeCount")
 
+                LOG.info("Weekend downscale day list: $downscaleWeekendDaysList")
+
+                LOG.info("Daily busy period enabled: $dailyBusyPeriod")
+                LOG.info("Daily busy period time range: $dailyBusyPeriodTimeRange")
+
                 LOG.info("Timezone: $timeZoneId")
 
                 val kubernetesClient = getAndConfigureKubernetesClient()
@@ -103,28 +116,40 @@ class AppMain {
                     .build()
 
                 while (active.get()) {
+                    val timerStartTime = ZonedDateTime.now(timeZoneId)
                     try {
-                        LOG.info("Start aggregating resources")
-                        val scaleUpResponse =
-                            calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
-                        LOG.info("Start ASG scaling")
                         val downScalingPodsMode =
                             dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
                         if (downScalingPodsMode) {
-                            LOG.info("Start Pod Scaling")
+                            LOG.info("Start Pod Down Scaling")
                             val coroutineDispatcher =
                                 Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
                             scaleDownDeployments(kubernetesClient, coroutineDispatcher)
+                            LOG.info("Finished Pod Down Scaling")
                         }
 
-                        LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
-                        val downScalingNodesMode =
+                        LOG.info("Start ASG scaling")
+                        val downScalingNodesMode = downscaleWeekendDaysList.contains(ZonedDateTime.now(timeZoneId).dayOfWeek.toString()) ||
                             dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
                         if (downScalingNodesMode) {
                             LOG.info("In downscale window start scaling down nodes")
                             asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
                         } else {
                             LOG.info("Not in downscale window")
+
+                            currentScaleUpFactor = scaleUpFactor
+                            if (dailyBusyPeriod && dailyBusyPeriodTimeRange.inWindow()) {
+                                LOG.info("In busy period window")
+                                currentScaleUpFactor = dailyBusyPeriodScaleUpFactor
+                            }
+                            LOG.info("Current scale up factor: $currentScaleUpFactor")
+
+                            LOG.info("Start aggregating resources")
+                            val scaleUpResponse =
+                                calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
+
+                            LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
+
                             asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
                         }
                         LOG.info("Finished ASG scaling")
@@ -132,7 +157,7 @@ class AppMain {
                         LOG.error(e)
                     }
                     WaitUntilGateway(clockGateway).waitUntilNext(
-                        ZonedDateTime.now(timeZoneId),
+                        timerStartTime,
                         ChronoUnit.MINUTES,
                         waitTimeBetweenScalingInMinutes
                     )
@@ -204,36 +229,41 @@ class AppMain {
             currentScaleUpFactor: Int,
             asgOneNodeCapacity: Resources
         ): ScaleUpResponse {
-            val nodeNames = getSchedulableWorkerNodes(kubernetesClient)
+            val kubernetesRequestsStartTime = System.currentTimeMillis()
+            val schedulableWorkerNodes = getSchedulableWorkerNodes(kubernetesClient)
+            val nodeNames = schedulableWorkerNodes.map { node -> node.metadata.name }
             val activePodsByNode: Map<String, List<Pod>> = nodeNames.map { nodeName ->
                 nodeName to getNodeNonTerminatedPodList(kubernetesClient, nodeName)
             }.toMap()
+            val kubernetesRequestsEndTime = System.currentTimeMillis()
+            LOG.info("Kubernetes client requests took (Milliseconds): ${kubernetesRequestsEndTime - kubernetesRequestsStartTime}")
 
             val nodeCapacity: MutableMap<String, Resources> = mutableMapOf()
             val nodeAllocatable: MutableMap<String, Resources> = mutableMapOf()
             val podRequested: MutableMap<String, Resources> = mutableMapOf()
             val podLimits: MutableMap<String, Resources> = mutableMapOf()
 
-            nodeNames.forEach { node ->
-                val nodeStatus = kubernetesClient.nodes().withName(node)?.get()?.status
-                nodeCapacity[node] = Resources(
+            schedulableWorkerNodes.forEach { node ->
+                val nodeStatus = node?.status
+                val nodeName = node.metadata.name
+                nodeCapacity[nodeName] = Resources(
                     getCpuCapacityFromNodeStatus(nodeStatus),
                     getMemoryCapacityFromNodeStatus(nodeStatus),
                     getPodCapacityFromNodeStatus(nodeStatus)
                 )
-                nodeAllocatable[node] = Resources(
+                nodeAllocatable[nodeName] = Resources(
                     getAllocatableCpuFromNodeStatus(nodeStatus),
                     getAllocatableMemoryFromNodeStatus(nodeStatus),
                     getAllocatablePodsFromNodeStatus(nodeStatus)
                 )
 
-                val activePodsOnNode = activePodsByNode[node]
-                podRequested[node] = Resources(
+                val activePodsOnNode = activePodsByNode[nodeName]
+                podRequested[nodeName] = Resources(
                     getTotalCpuRequestsFromListOfPods(activePodsOnNode),
                     getTotalMemoryRequestsFromListOfPods(activePodsOnNode),
                     activePodsOnNode?.count()?.toLong() ?: 0
                 )
-                podLimits[node] = Resources(
+                podLimits[nodeName] = Resources(
                     getTotalCpuLimitsFromListOfPods(activePodsOnNode),
                     getTotalMemoryLimitsFromListOfPods(activePodsOnNode),
                     0
@@ -365,7 +395,6 @@ class AppMain {
                 .items
                 .filter {!(it?.spec?.unschedulable ?: false)}
                 .filter {!filterOutTaintedNodes || it?.spec?.taints?.isEmpty() ?: false}
-                .map { node -> node.metadata.name }
 
         private fun getNodeNonTerminatedPodList(
             it: DefaultKubernetesClient,
