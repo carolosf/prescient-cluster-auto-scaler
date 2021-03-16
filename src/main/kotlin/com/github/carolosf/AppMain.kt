@@ -154,7 +154,7 @@ class AppMain {
                         }
                         LOG.info("Finished ASG scaling")
                     } catch (e : Exception) {
-                        LOG.error(e)
+                        LOG.error(e, e)
                     }
                     WaitUntilGateway(clockGateway).waitUntilNext(
                         timerStartTime,
@@ -187,22 +187,27 @@ class AppMain {
 
                         deps.map {
                             launch {
-                                if (it.kind != "Deployment") {
-                                    LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
-                                    return@launch
-                                }
-                                val logMessage = "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
-                                if (it.spec.replicas != 0) {
-                                    if (dryRun) {
-                                        LOG.debug("DRY RUN - $logMessage")
-                                    } else {
-                                        LOG.debug(logMessage)
-                                        kubernetesClient.apps().deployments()
-                                            .inNamespace(it.metadata.namespace)
-                                            .withName(it.metadata.name)
-                                            .scale(0, true)
+                                try {
+                                    if (it.kind != "Deployment") {
+                                        LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
+                                        return@launch
                                     }
-                                    scaledDownDeployments.add(it.metadata.name)
+                                    val logMessage =
+                                        "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
+                                    if (it.spec.replicas != 0) {
+                                        if (dryRun) {
+                                            LOG.debug("DRY RUN - $logMessage")
+                                        } else {
+                                            LOG.debug(logMessage)
+                                            kubernetesClient.apps().deployments()
+                                                .inNamespace(it.metadata.namespace)
+                                                .withName(it.metadata.name)
+                                                .scale(0, true)
+                                        }
+                                        scaledDownDeployments.add(it.metadata.name)
+                                    }
+                                } catch (e: Exception) {
+                                    LOG.error(e, e)
                                 }
                             }
                         }.joinAll()
