@@ -103,28 +103,39 @@ class AppMain {
                     .build()
 
                 while (active.get()) {
-                    LOG.info("Start aggregating resources")
-                    val scaleUpResponse = calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
-                    LOG.info("Start ASG scaling")
-                    val downScalingPodsMode = dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
-                    if (downScalingPodsMode) {
-                        LOG.info("Start Pod Scaling")
-                        val coroutineDispatcher = Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
-                        scaleDownDeployments(kubernetesClient, coroutineDispatcher)
-                    }
+                    try {
+                        LOG.info("Start aggregating resources")
+                        val scaleUpResponse =
+                            calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
+                        LOG.info("Start ASG scaling")
+                        val downScalingPodsMode =
+                            dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        if (downScalingPodsMode) {
+                            LOG.info("Start Pod Scaling")
+                            val coroutineDispatcher =
+                                Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
+                            scaleDownDeployments(kubernetesClient, coroutineDispatcher)
+                        }
 
-                    LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
-                    val downScalingNodesMode = dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
-                    if (downScalingNodesMode) {
-                        LOG.info("In downscale window start scaling down nodes")
-                        asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
-                    } else {
-                        LOG.info("Not in downscale window")
-                        asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
+                        LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
+                        val downScalingNodesMode =
+                            dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        if (downScalingNodesMode) {
+                            LOG.info("In downscale window start scaling down nodes")
+                            asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
+                        } else {
+                            LOG.info("Not in downscale window")
+                            asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
+                        }
+                        LOG.info("Finished ASG scaling")
+                    } catch (e : Exception) {
+                        LOG.error(e)
                     }
-                    LOG.info("Finished ASG scaling")
-
-                    WaitUntilGateway(clockGateway).waitUntilNext(ZonedDateTime.now(), ChronoUnit.MINUTES, waitTimeBetweenScalingInMinutes)
+                    WaitUntilGateway(clockGateway).waitUntilNext(
+                        ZonedDateTime.now(timeZoneId),
+                        ChronoUnit.MINUTES,
+                        waitTimeBetweenScalingInMinutes
+                    )
                 }
                 Quarkus.waitForExit()
                 return 0
