@@ -19,7 +19,7 @@ data class DailyTimeRange(val start: DailyTime, val end: DailyTime, val clockGat
     fun inWindow(): Boolean {
         val sameDay = end.hour > start.hour
         val now: ZonedDateTime = clockGateway.getDateTime()
-        val relativeNow: ZonedDateTime = if (now.hour > 0 && now.hour < end.hour) {
+        val relativeNow: ZonedDateTime = if (!sameDay && now.hour > 0 && now.hour < end.hour) {
             now.minusDays(1)
         } else {
             now

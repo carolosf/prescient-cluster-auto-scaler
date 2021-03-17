@@ -21,6 +21,10 @@ class DailyTimeRangeTest {
     private val beforeEndRange = beforeStartRange.plusDays(1).withHour(6)
     private val afterEndRange = beforeStartRange.plusDays(1).withHour(8)
 
+    private val startSameDay = DailyTime(9, 0)
+    private val endSameDay = DailyTime(12, 0)
+
+
     @Test
     internal fun `ensure before start`() {
         assertFalse(DailyTimeRange(start, end, MockClockGateway(beforeStartRange)).inWindow())
@@ -49,5 +53,24 @@ class DailyTimeRangeTest {
     @Test
     internal fun `ensure end`() {
         assertFalse(DailyTimeRange(start, end, MockClockGateway(endRange)).inWindow())
+    }
+
+    @Test
+    internal fun `same day test`() {
+        val startSameDay = DailyTime(9, 0)
+        val endSameDay = DailyTime(12, 0)
+        val beforeStartRangeSameDay = ZonedDateTime.of(2021,1,1, 8, 0, 0, 0, ZoneId.systemDefault())!!
+        val startRangeSameDay: ZonedDateTime = beforeStartRange.withHour(9)
+        val afterStartRangeSameDay = beforeStartRange.withHour(10)
+        val endRangeSameDay = beforeStartRange.plusDays(1).withHour(12)
+        val beforeEndRangeSameDay = beforeStartRange.plusDays(1).withHour(11)
+        val afterEndRangeSameDay = beforeStartRange.plusDays(1).withHour(13)
+        assertFalse(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(beforeStartRangeSameDay)).inWindow())
+        assertTrue(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(afterStartRangeSameDay)).inWindow())
+        assertTrue(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(startRangeSameDay)).inWindow())
+        assertTrue(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(beforeEndRangeSameDay)).inWindow())
+        assertFalse(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(afterEndRangeSameDay)).inWindow())
+        assertFalse(DailyTimeRange(startSameDay, endSameDay, MockClockGateway(endRangeSameDay)).inWindow())
+
     }
 }
