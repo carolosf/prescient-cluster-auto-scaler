@@ -172,7 +172,7 @@ class AppMain {
             ) {
                 val namespaces = kubernetesClient.namespaces().list().items
                 val ignoredNamespaces = namespaces.filter {dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
-                LOG.info("Ignoring namespaces: ${ignoredNamespaces.joinToString{ it.metadata.name }}")
+                LOG.debug("Ignoring namespaces: ${ignoredNamespaces.joinToString{ it.metadata.name }}")
                 val downscaleNamespaces = namespaces.filter {!dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
                 LOG.info("Downscaling namespaces: ${downscaleNamespaces.joinToString{ it.metadata.name }}")
 
@@ -196,9 +196,9 @@ class AppMain {
                                         "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
                                     if (it.spec.replicas != 0) {
                                         if (dryRun) {
-                                            LOG.debug("DRY RUN - $logMessage")
+                                            LOG.trace("DRY RUN - $logMessage")
                                         } else {
-                                            LOG.debug(logMessage)
+                                            LOG.trace(logMessage)
                                             kubernetesClient.apps().deployments()
                                                 .inNamespace(it.metadata.namespace)
                                                 .withName(it.metadata.name)
