@@ -182,7 +182,7 @@ class AppMain {
 
                 runBlocking(coroutineDispatcher) {
                     podsToScaleByNamespace.forEach { (ns, deps) ->
-                        LOG.info("Scaling down namespace: ${ns.metadata.name}")
+                        LOG.debug("Scaling down namespace: ${ns.metadata.name}")
                         val scaledDownDeployments = Collections.synchronizedList<String>(mutableListOf())
 
                         deps.map {
@@ -211,7 +211,9 @@ class AppMain {
                                 }
                             }
                         }.joinAll()
-                        LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments: $scaledDownDeployments")
+                        if (scaledDownDeployments.isNotEmpty()) {
+                            LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments in namespace $ns: $scaledDownDeployments")
+                        }
                     }
                 }
             }
