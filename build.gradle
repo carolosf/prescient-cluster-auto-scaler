@@ -18,6 +18,8 @@ dependencies {
     implementation 'io.quarkus:quarkus-arc'
     implementation 'io.quarkus:quarkus-resteasy'
     implementation 'software.amazon.awssdk:autoscaling:2.16.12'
+    implementation 'org.threeten:threeten-extra:1.6.0'
+
     runtime 'commons-logging:commons-logging:1.2'
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation 'io.rest-assured:rest-assured'

@@ -2,11 +2,16 @@
 
 This project scales kubernetes clusters automatically so that you always have at least x times the resources you need available.
 This is useful for developer preview environments.
-This project doesn't scale down nodes only grows the number of nodes in the auto scaling group.
+
+This project's default settings don't scale down nodes only grows the number of nodes in the auto scaling group to avoid disrupting developer environments.
 
 This project uses Quarkus, the Supersonic Subatomic Java Framework.
 
 If you want to learn more about Quarkus, please visit its website: https://quarkus.io/ .
+
+## TODO
+- Delete nodes that failed to start/unresponsive nodes
+- Potentially cordoning and draining nodes during down scale
 
 ## IAM Policy
 ```
@@ -52,6 +57,7 @@ If you want to learn more about Quarkus, please visit its website: https://quark
 |DAILY_BUSY_PERIOD|false| This lets you set a different scaling factor on daily busy periods|
 |DAILY_BUSY_PERIOD_TIME_RANGE|09:00-12:00|This is the time range of the busy period|
 |DAILY_BUSY_PERIOD_SCALE_FACTOR|1|This is the scale factor of the busy period|
+|NAMESPACE_UPTIME_SCALING|true|If not in the downscale time range then this scales namespaces up if the "prescient-cluster-autoscaler/uptime" annotation is present with a value in ISO8601 interval format. See below for more details. |
 
 ## Sample Kubernetes Cluster Role and Binding
 ```
@@ -145,6 +151,20 @@ spec:
               value: true
 ```
 You need to create a namespace or install in kube-system
+
+## Namespace up time scaling
+You might want to scale up a particular namespace to run during an uptime window.
+
+NOTE: name space uptime scaling during the cluster downtime window is not supported.
+
+The up time interval is defined using an annotation on the namespace called "prescient-cluster-autoscaler/uptime" with a value in the ISO8601 Time Intervals format.
+
+e.g.
+"prescient-cluster-autoscaler/uptime": "2021-03-01T13:00:00Z/2021-05-11T15:30:00Z"
+
+More information available here: https://www.threeten.org/threeten-extra/apidocs/org.threeten.extra/org/threeten/extra/Interval.html#parse(java.lang.CharSequence)
+
+You should set the "prescient-cluster-autoscaler/uptime-desired-replicas" annotation on deployments to the value you need to set desired replicas to.
 
 ## Running the application in dev mode
 

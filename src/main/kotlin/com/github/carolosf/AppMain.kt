@@ -1,8 +1,10 @@
 package com.github.carolosf
 
+import io.fabric8.kubernetes.api.model.Namespace
 import io.fabric8.kubernetes.api.model.NodeStatus
 import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.Quantity
+import io.fabric8.kubernetes.api.model.apps.Deployment
 import io.fabric8.kubernetes.client.ConfigBuilder
 import io.fabric8.kubernetes.client.DefaultKubernetesClient
 import io.quarkus.runtime.Quarkus
@@ -10,6 +12,7 @@ import io.quarkus.runtime.QuarkusApplication
 import io.quarkus.runtime.annotations.QuarkusMain
 import kotlinx.coroutines.*
 import org.jboss.logging.Logger
+import org.threeten.extra.Interval
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
@@ -79,6 +82,8 @@ class AppMain {
         private val dailyBusyPeriodTimeRange = DailyTimeRange.parse(System.getenv("DAILY_BUSY_PERIOD_TIME_RANGE") ?: "09:00-12:00", clockGateway)
         private val dailyBusyPeriodScaleUpFactor = System.getenv("DAILY_BUSY_PERIOD_SCALE_FACTOR")?.toInt() ?: 1
 
+        private val namespaceUptimeScaling = System.getenv("NAMESPACE_UPTIME_SCALING")?.toBoolean() ?: true
+
         @JvmStatic
         fun main(vararg args: String) {
             Quarkus.run(MyApp::class.java, *args)
@@ -108,6 +113,8 @@ class AppMain {
                 LOG.info("Daily busy period enabled: $dailyBusyPeriod")
                 LOG.info("Daily busy period time range: $dailyBusyPeriodTimeRange")
 
+                LOG.info("Namespace uptime scaling: $namespaceUptimeScaling")
+
                 LOG.info("Timezone: $timeZoneId")
 
                 val kubernetesClient = getAndConfigureKubernetesClient()
@@ -120,17 +127,66 @@ class AppMain {
                     try {
                         val downScalingPodsMode =
                             dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        val downScalingNodesMode = downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
+                                dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+
+                        val allowedNamespaces = getAllowedNamespaces(kubernetesClient)
+
                         if (downScalingPodsMode) {
-                            LOG.info("Start Pod Down Scaling")
+                            LOG.info("Start Daily Cluster Deployment Down Scaling")
                             val coroutineDispatcher =
                                 Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
-                            scaleDownDeployments(kubernetesClient, coroutineDispatcher)
-                            LOG.info("Finished Pod Down Scaling")
+                            scaleDeploymentsInNamespaces(
+                                kubernetesClient,
+                                logNamespaceNames(allowedNamespaces),
+                                coroutineDispatcher)
+                            {
+                                0
+                            }
+                            LOG.info("Finished Daily Cluster Deployment Down Scaling")
+                        }
+
+                        val nowForUptimeScale = ZonedDateTime.now(timeZoneId)
+
+                        val namespaceUptimeScalingMode = namespaceUptimeScaling && !downScalingPodsMode && !downScalingNodesMode
+                        if (namespaceUptimeScalingMode){
+
+                            val uptimeAnnotation = "prescient-cluster-autoscaler/uptime"
+                            val annotatedNamespaces = allowedNamespaces
+                                .filter { it.metadata.annotations.containsKey(uptimeAnnotation) }
+
+                            val uptimeNamespaces = annotatedNamespaces.filter {
+                                Interval.parse(it.metadata.annotations?.get(uptimeAnnotation))
+                                    .contains(nowForUptimeScale.toInstant())
+                            }
+
+                            val downtimeNamespaces = annotatedNamespaces.filter {
+                                !Interval.parse(it.metadata.annotations?.get(uptimeAnnotation))
+                                    .contains(nowForUptimeScale.toInstant())
+                            }
+
+                            val coroutineDispatcher =
+                                Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
+                            LOG.info("Start Annotated Namespace Down Scaling")
+                            scaleDeploymentsInNamespaces(
+                                kubernetesClient,
+                                logNamespaceNames(downtimeNamespaces),
+                                coroutineDispatcher)
+                            {
+                                0
+                            }
+
+                            LOG.info("Start Annotated Namespace Up Scaling")
+                            scaleDeploymentsInNamespaces(
+                                kubernetesClient,
+                                logNamespaceNames(uptimeNamespaces),
+                                coroutineDispatcher)
+                            {
+                                it.metadata.annotations["prescient-cluster-autoscaler/uptime-desired-replicas"]?.toInt()
+                            }
                         }
 
                         LOG.info("Start ASG scaling")
-                        val downScalingNodesMode = downscaleWeekendDaysList.contains(ZonedDateTime.now(timeZoneId).dayOfWeek.toString()) ||
-                            dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
                         if (downScalingNodesMode) {
                             LOG.info("In downscale window start scaling down nodes")
                             asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
@@ -166,23 +222,18 @@ class AppMain {
                 return 0
             }
 
-            private fun scaleDownDeployments(
+            private fun scaleDeploymentsInNamespaces(
                 kubernetesClient: DefaultKubernetesClient,
-                coroutineDispatcher: ExecutorCoroutineDispatcher
+                namespacesToScale: List<Namespace>,
+                coroutineDispatcher: ExecutorCoroutineDispatcher,
+                wait : Boolean = true,
+                replicaCountStrategy: (d: Deployment) -> Int?
             ) {
-                val namespaces = kubernetesClient.namespaces().list().items
-                val ignoredNamespaces = namespaces.filter {dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
-                LOG.debug("Ignoring namespaces: ${ignoredNamespaces.joinToString{ it.metadata.name }}")
-                val downscaleNamespaces = namespaces.filter {!dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name)}
-                LOG.info("Downscaling namespaces: ${downscaleNamespaces.joinToString{ it.metadata.name }}")
-
-                val podsToScaleByNamespace = downscaleNamespaces.map {
-                    it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
-                }.toMap()
+                val deploymentsToScaleByNamespace: Map<Namespace, MutableList<Deployment>> = getDeploymentsInNamespace(namespacesToScale, kubernetesClient)
 
                 runBlocking(coroutineDispatcher) {
-                    podsToScaleByNamespace.forEach { (ns, deps) ->
-                        LOG.debug("Scaling down namespace: ${ns.metadata.name}")
+                    deploymentsToScaleByNamespace.forEach { (ns, deps) ->
+                        LOG.debug("Scaling namespace: ${ns.metadata.name}")
                         val scaledDownDeployments = Collections.synchronizedList<String>(mutableListOf())
 
                         deps.map {
@@ -192,9 +243,11 @@ class AppMain {
                                         LOG.warn("Kind not supported yet: ${it.kind} for ${it.metadata.name}")
                                         return@launch
                                     }
+                                    val desiredReplicas = replicaCountStrategy(it)
                                     val logMessage =
-                                        "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace}"
-                                    if (it.spec.replicas != 0) {
+                                        "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace} to $desiredReplicas"
+
+                                    if ( desiredReplicas != null && it.spec.replicas != desiredReplicas) {
                                         if (dryRun) {
                                             LOG.trace("DRY RUN - $logMessage")
                                         } else {
@@ -202,7 +255,7 @@ class AppMain {
                                             kubernetesClient.apps().deployments()
                                                 .inNamespace(it.metadata.namespace)
                                                 .withName(it.metadata.name)
-                                                .scale(0, true)
+                                                .scale(desiredReplicas, wait)
                                         }
                                         scaledDownDeployments.add(it.metadata.name)
                                     }
@@ -212,10 +265,32 @@ class AppMain {
                             }
                         }.joinAll()
                         if (scaledDownDeployments.isNotEmpty()) {
-                            LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled down deployments in namespace $ns: $scaledDownDeployments")
+                            LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled deployments in namespace $ns: $scaledDownDeployments")
                         }
                     }
                 }
+            }
+
+            private fun getDeploymentsInNamespace(
+                downscaleNamespaces: List<Namespace>,
+                kubernetesClient: DefaultKubernetesClient
+            ) = downscaleNamespaces.map {
+                it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
+            }.toMap()
+
+            private fun getAllowedNamespaces(kubernetesClient: DefaultKubernetesClient): List<Namespace> {
+                val namespaces: MutableList<Namespace> = kubernetesClient.namespaces().list().items
+                val ignoredNamespaces =
+                    namespaces.filter { dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name) }
+                LOG.debug("Ignoring namespaces: ${ignoredNamespaces.joinToString { it.metadata.name }}")
+
+                return namespaces
+                    .filter { !dailyDownScaleNamespaceIgnoreList.contains(it.metadata.name) }
+            }
+
+            private fun logNamespaceNames(allowedNamespaces: List<Namespace>): List<Namespace> {
+                LOG.info("Namespace list: ${allowedNamespaces.joinToString { it.metadata.name }}")
+                return allowedNamespaces
             }
         }
 
