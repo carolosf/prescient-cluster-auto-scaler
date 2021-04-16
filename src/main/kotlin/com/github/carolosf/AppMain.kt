@@ -265,7 +265,7 @@ class AppMain {
                             }
                         }.joinAll()
                         if (scaledDownDeployments.isNotEmpty()) {
-                            LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled deployments in namespace $ns: $scaledDownDeployments")
+                            LOG.info("${if (dryRun) "DRY RUN - " else ""}Scaled deployments in namespace ${ns.metadata.name}: $scaledDownDeployments")
                         }
                     }
                 }
