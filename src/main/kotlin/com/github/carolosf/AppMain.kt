@@ -72,6 +72,7 @@ class AppMain {
         private val dailyDownScalePodsAndNodesTimeRange = DailyTimeRange.parse(System.getenv("DAILY_DOWNSCALE_PODS_AND_NODES_TIME_RANGE") ?: "20:00-07:00", clockGateway)
         private val dailyDownScaleScaleDownPods = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_PODS")?.toBoolean() ?: true
         private val dailyDownScaleScaleDownNodes = System.getenv("DAILY_DOWNSCALE_SCALE_DOWN_NODES")?.toBoolean() ?: true
+        private val dailyDownScaleAutoScaleNodes = System.getenv("DAILY_DOWNSCALE_AUTO_SCALE_NODES")?.toBoolean() ?: false
         private val dailyDownScalePodsThreadCount = System.getenv("DAILY_DOWNSCALE_PODS_THREAD_COUNT")?.toInt() ?: 20
         private val dailyDownScaleNamespaceIgnoreList = (System.getenv("DAILY_DOWNSCALE_NAMESPACE_IGNORE_LIST") ?: "kube-system,istio-system,ingress-nginx,fleet-system,cert-manager,cattle-system,cattle-prometheus,kube-node-lease,kube-public,security-scan,cattle-monitoring-system").split(",")
         private val dailyDownScaleNodeCount = System.getenv("DAILY_DOWNSCALE_NODE_COUNT")?.toInt() ?: 3
@@ -129,6 +130,8 @@ class AppMain {
                             dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
                         val downScalingNodesMode = downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
                                 dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        val downScalingAutoScaleNodesMode = downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
+                                dailyDownScaleAutoScaleNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
 
                         val allowedNamespaces = getAllowedNamespaces(kubernetesClient)
 
@@ -187,26 +190,38 @@ class AppMain {
                         }
 
                         LOG.info("Start ASG scaling")
-                        if (downScalingNodesMode) {
-                            LOG.info("In downscale window start scaling down nodes")
-                            asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
-                        } else {
-                            LOG.info("Not in downscale window")
-
-                            currentScaleUpFactor = scaleUpFactor
-                            if (dailyBusyPeriod && dailyBusyPeriodTimeRange.inWindow()) {
-                                LOG.info("In busy period window")
-                                currentScaleUpFactor = dailyBusyPeriodScaleUpFactor
+                        when {
+                            downScalingNodesMode -> {
+                                LOG.info("In downscale window start scaling down nodes")
+                                asgTargetDesiredCapacityStrategy(dailyDownScaleNodeCount, autoscalingClient)
                             }
-                            LOG.info("Current scale up factor: $currentScaleUpFactor")
+                            downScalingAutoScaleNodesMode -> {
+                                LOG.info("In downscale window start auto scaling nodes")
+                                val scaleUpResponse =
+                                    calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity, false)
 
-                            LOG.info("Start aggregating resources")
-                            val scaleUpResponse =
-                                calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity)
+                                LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
 
-                            LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
+                                asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
+                            }
+                            else -> {
+                                LOG.info("Not in downscale window")
 
-                            asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
+                                currentScaleUpFactor = scaleUpFactor
+                                if (dailyBusyPeriod && dailyBusyPeriodTimeRange.inWindow()) {
+                                    LOG.info("In busy period window")
+                                    currentScaleUpFactor = dailyBusyPeriodScaleUpFactor
+                                }
+                                LOG.info("Current scale up factor: $currentScaleUpFactor")
+
+                                LOG.info("Start aggregating resources")
+                                val scaleUpResponse =
+                                    calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity, onlyAddNodes)
+
+                                LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
+
+                                asgAdditiveDesiredCapacityStrategy(scaleUpResponse.scaleUp, autoscalingClient)
+                            }
                         }
                         LOG.info("Finished ASG scaling")
                     } catch (e : Exception) {
@@ -309,7 +324,8 @@ class AppMain {
         private fun calculateScaleUpFactor(
             kubernetesClient: DefaultKubernetesClient,
             currentScaleUpFactor: Int,
-            asgOneNodeCapacity: Resources
+            asgOneNodeCapacity: Resources,
+            onlyAdd: Boolean
         ): ScaleUpResponse {
             val kubernetesRequestsStartTime = System.currentTimeMillis()
             val schedulableWorkerNodes = getSchedulableWorkerNodes(kubernetesClient)
@@ -388,7 +404,7 @@ class AppMain {
 
             val scaleUp =
                 scalerStrategy.calculateScaleFactor(
-                    currentScaleUpFactor, totalAvailable, asgOneNodeCapacity, onlyAddNodes
+                    currentScaleUpFactor, totalAvailable, asgOneNodeCapacity, onlyAdd
                 )
             return ScaleUpResponse(scaleUp, nodeNames.count())
         }
