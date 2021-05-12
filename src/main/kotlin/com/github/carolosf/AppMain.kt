@@ -84,6 +84,7 @@ class AppMain {
         private val dailyBusyPeriodScaleUpFactor = System.getenv("DAILY_BUSY_PERIOD_SCALE_FACTOR")?.toInt() ?: 1
 
         private val namespaceUptimeScaling = System.getenv("NAMESPACE_UPTIME_SCALING")?.toBoolean() ?: true
+        private val namespaceUptimeScalingAllowHigherReplicas = System.getenv("NAMESPACE_UPTIME_SCALING_ALLOW_HIGHER_REPLICAS")?.toBoolean() ?: true
 
         @JvmStatic
         fun main(vararg args: String) {
@@ -105,6 +106,7 @@ class AppMain {
                 LOG.info("Daily down scale time: $dailyDownScalePodsAndNodesTimeRange")
                 LOG.info("Daily down scale pods enabled: $dailyDownScaleScaleDownPods")
                 LOG.info("Daily down scale nodes enabled: $dailyDownScaleScaleDownNodes")
+                LOG.info("Daily down scale auto scale nodes enabled: $dailyDownScaleAutoScaleNodes")
                 LOG.info("Daily down scale pod scaling thread count: $dailyDownScalePodsThreadCount")
                 LOG.info("Daily down scale pod namespace ignore list: $dailyDownScaleNamespaceIgnoreList")
                 LOG.info("Daily down scale target node count: $dailyDownScaleNodeCount")
@@ -115,6 +117,7 @@ class AppMain {
                 LOG.info("Daily busy period time range: $dailyBusyPeriodTimeRange")
 
                 LOG.info("Namespace uptime scaling: $namespaceUptimeScaling")
+                LOG.info("Namespace uptime scaling allow manual higher replica counts by users: $namespaceUptimeScalingAllowHigherReplicas")
 
                 LOG.info("Timezone: $timeZoneId")
 
@@ -183,7 +186,8 @@ class AppMain {
                             scaleDeploymentsInNamespaces(
                                 kubernetesClient,
                                 logNamespaceNames(uptimeNamespaces),
-                                coroutineDispatcher)
+                                coroutineDispatcher,
+                                !namespaceUptimeScalingAllowHigherReplicas)
                             {
                                 it.metadata.annotations["prescient-cluster-autoscaler/uptime-desired-replicas"]?.toInt()
                             }
@@ -241,6 +245,7 @@ class AppMain {
                 kubernetesClient: DefaultKubernetesClient,
                 namespacesToScale: List<Namespace>,
                 coroutineDispatcher: ExecutorCoroutineDispatcher,
+                rescaleHigherCount : Boolean = true,
                 wait : Boolean = true,
                 replicaCountStrategy: (d: Deployment) -> Int?
             ) {
@@ -265,6 +270,8 @@ class AppMain {
                                     if ( desiredReplicas != null && it.spec.replicas != desiredReplicas) {
                                         if (dryRun) {
                                             LOG.trace("DRY RUN - $logMessage")
+                                        } else if (it.spec.replicas > desiredReplicas && !rescaleHigherCount) {
+                                            LOG.warn("${it.metadata.name} in ${it.metadata.namespace} has more replicas (${it.spec.replicas}) than desired replicas ($desiredReplicas)")
                                         } else {
                                             LOG.trace(logMessage)
                                             kubernetesClient.apps().deployments()
