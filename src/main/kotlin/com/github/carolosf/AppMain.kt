@@ -272,6 +272,8 @@ class AppMain {
                                             LOG.trace("DRY RUN - $logMessage")
                                         } else if (it.spec.replicas > desiredReplicas && !rescaleHigherCount) {
                                             LOG.warn("${it.metadata.name} in ${it.metadata.namespace} has more replicas (${it.spec.replicas}) than desired replicas ($desiredReplicas)")
+                                        } else if (desiredReplicas > 0 && it.metadata.annotations["prescient-cluster-autoscaler/skip-scaling-up"] == "true") {
+                                            LOG.warn("${it.metadata.name} in ${it.metadata.namespace} has skip scaling up annotation current replicas (${it.spec.replicas}) and desired replicas ($desiredReplicas)")
                                         } else {
                                             LOG.trace(logMessage)
                                             kubernetesClient.apps().deployments()

@@ -168,6 +168,8 @@ More information available here: https://www.threeten.org/threeten-extra/apidocs
 
 You should set the "prescient-cluster-autoscaler/uptime-desired-replicas" annotation on deployments to the value you need to set desired replicas to.
 
+If you want to skip scaling up for a particular deployment you can set "prescient-cluster-autoscaler/skip-scaling-up" for that deployment to "true"
+
 ## Running the application in dev mode
 
 You can run your application in dev mode that enables live coding using:
