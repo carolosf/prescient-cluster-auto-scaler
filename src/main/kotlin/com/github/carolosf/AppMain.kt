@@ -335,7 +335,9 @@ class AppMain {
                                         "Scaling deployment: ${it.metadata.name} in ${it.metadata.namespace} to $desiredReplicas"
 
                                     if ( desiredReplicas != null && it.spec.replicas != desiredReplicas) {
-                                        if (dryRun) {
+                                        if (!active.get()) {
+                                            LOG.trace("Not active - $logMessage")
+                                        } else if (dryRun) {
                                             LOG.trace("DRY RUN - $logMessage")
                                         } else if (it.spec.replicas > desiredReplicas && !rescaleHigherCount) {
                                             LOG.warn("${it.metadata.name} in ${it.metadata.namespace} has more replicas (${it.spec.replicas}) than desired replicas ($desiredReplicas)")
@@ -652,7 +654,9 @@ class AppMain {
             desiredCapacity: Int,
             autoscalingClient: AutoScalingClient
         ) {
-            if (dryRun) {
+            if (!active.get()) {
+                LOG.info("Autoscaler not active - not setting ASG")
+            } else if (dryRun) {
                 LOG.info("DRY RUN - Setting desired capacity : $desiredCapacity")
             } else {
                 LOG.info("Setting desired capacity : $desiredCapacity")
