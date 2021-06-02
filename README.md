@@ -60,7 +60,7 @@ If you want to learn more about Quarkus, please visit its website: https://quark
 |DAILY_BUSY_PERIOD_SCALE_FACTOR|1|This is the scale factor of the busy period|
 |NAMESPACE_UPTIME_SCALING|true|If not in the downscale time range then this scales namespaces up if the "prescient-cluster-autoscaler/uptime" annotation is present with a value in ISO8601 interval format. See below for more details. |
 |NAMESPACE_UPTIME_SCALING_ALLOW_HIGHER_REPLICAS|true|Allows users to manually set a higher replica count during their uptime window. Gets set to 0 when uptime window expires.|
-
+|LEADER_LOCK_NAMESPACE|kube-system|Use namespace for leader election lock|
 ## Sample Kubernetes Cluster Role and Binding
 ```
 apiVersion: rbac.authorization.k8s.io/v1
@@ -88,6 +88,18 @@ rules:
       - list
       - update
       - patch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - watch
+      - list
+      - update
+      - patch
+      - create
+      - delete
 ```
 ```
 apiVersion: v1
