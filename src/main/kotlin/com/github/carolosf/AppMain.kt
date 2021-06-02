@@ -161,6 +161,7 @@ class AppMain {
                                         thread = Thread {
                                             autoscalerLoop(kubernetesClient, autoscalingClient)
                                         }
+                                        thread?.start()
                                     },
                                     {
                                         LOG.info("Stopped leadership")
