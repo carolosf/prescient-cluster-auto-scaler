@@ -7,6 +7,9 @@ import io.fabric8.kubernetes.api.model.Quantity
 import io.fabric8.kubernetes.api.model.apps.Deployment
 import io.fabric8.kubernetes.client.ConfigBuilder
 import io.fabric8.kubernetes.client.DefaultKubernetesClient
+import io.fabric8.kubernetes.client.extended.leaderelection.LeaderCallbacks
+import io.fabric8.kubernetes.client.extended.leaderelection.LeaderElectionConfigBuilder
+import io.fabric8.kubernetes.client.extended.leaderelection.resourcelock.LeaseLock
 import io.quarkus.runtime.Quarkus
 import io.quarkus.runtime.QuarkusApplication
 import io.quarkus.runtime.annotations.QuarkusMain
@@ -18,6 +21,7 @@ import software.amazon.awssdk.services.autoscaling.AutoScalingClient
 import software.amazon.awssdk.services.autoscaling.model.DescribeAutoScalingGroupsRequest
 import software.amazon.awssdk.services.autoscaling.model.SetDesiredCapacityRequest
 import java.math.BigDecimal
+import java.time.Duration
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
@@ -85,12 +89,15 @@ class AppMain {
 
         private val namespaceUptimeScaling = System.getenv("NAMESPACE_UPTIME_SCALING")?.toBoolean() ?: true
         private val namespaceUptimeScalingAllowHigherReplicas = System.getenv("NAMESPACE_UPTIME_SCALING_ALLOW_HIGHER_REPLICAS")?.toBoolean() ?: true
+        private val autoscaleLockNamespace = System.getenv("LEADER_LOCK_NAMESPACE") ?: "kube-system"
 
         @JvmStatic
         fun main(vararg args: String) {
             Quarkus.run(MyApp::class.java, *args)
         }
         class MyApp : QuarkusApplication {
+            private var thread: Thread? = null
+
             @Throws(Exception::class)
             override fun run(vararg args: String): Int {
                 setUpShutdownHook()
@@ -126,15 +133,63 @@ class AppMain {
                     .region(awsRegion)
                     .build()
 
+                val lockIdentity = UUID.randomUUID().toString()
+                kubernetesClient.use { kc ->
+                    kc.leaderElector()
+                        .withConfig(
+                            LeaderElectionConfigBuilder()
+                                .withName("Prescient Cluster Autoscaler Leader Election configuration")
+                                .withLeaseDuration(Duration.ofSeconds(15L))
+                                .withLock(
+                                    LeaseLock(
+                                        autoscaleLockNamespace,
+                                        "prescient-cluster-autoscaler-leader-lock",
+                                        lockIdentity
+                                    )
+                                )
+                                .withRenewDeadline(Duration.ofSeconds(10L))
+                                .withRetryPeriod(Duration.ofSeconds(2L))
+                                .withLeaderCallbacks(LeaderCallbacks(
+                                    {
+                                        LOG.info("Started leadership")
+                                        while(thread?.isAlive == true) {
+                                            active.set(false)
+                                            LOG.info("Waiting for thread to terminate")
+                                            TimeUnit.SECONDS.sleep(60)
+                                        }
+                                        active.set(true)
+                                        thread = Thread {
+                                            autoscalerLoop(kubernetesClient, autoscalingClient)
+                                        }
+                                    },
+                                    {
+                                        LOG.info("Stopped leadership")
+                                        active.set(false)
+                                    }
+                                ) { newLeader: String? -> LOG.info("New leader elected $newLeader") })
+                                .build()
+                        )
+                        .build().run()
+                }
+                Quarkus.waitForExit()
+                return 0
+            }
+
+            private fun autoscalerLoop(
+                kubernetesClient: DefaultKubernetesClient,
+                autoscalingClient: AutoScalingClient
+            ) {
                 while (active.get()) {
                     val timerStartTime = ZonedDateTime.now(timeZoneId)
                     try {
                         val downScalingPodsMode =
                             dailyDownScaleScaleDownPods && dailyDownScalePodsAndNodesTimeRange.inWindow()
-                        val downScalingNodesMode = downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
-                                dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
-                        val downScalingAutoScaleNodesMode = downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
-                                dailyDownScaleAutoScaleNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        val downScalingNodesMode =
+                            downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
+                                    dailyDownScaleScaleDownNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
+                        val downScalingAutoScaleNodesMode =
+                            downscaleWeekendDaysList.contains(timerStartTime.dayOfWeek.toString()) ||
+                                    dailyDownScaleAutoScaleNodes && dailyDownScalePodsAndNodesTimeRange.inWindow()
 
                         val allowedNamespaces = getAllowedNamespaces(kubernetesClient)
 
@@ -145,7 +200,8 @@ class AppMain {
                             scaleDeploymentsInNamespaces(
                                 kubernetesClient,
                                 logNamespaceNames(allowedNamespaces),
-                                coroutineDispatcher)
+                                coroutineDispatcher
+                            )
                             {
                                 0
                             }
@@ -154,8 +210,9 @@ class AppMain {
 
                         val nowForUptimeScale = ZonedDateTime.now(timeZoneId)
 
-                        val namespaceUptimeScalingMode = namespaceUptimeScaling && !downScalingPodsMode && !downScalingNodesMode
-                        if (namespaceUptimeScalingMode){
+                        val namespaceUptimeScalingMode =
+                            namespaceUptimeScaling && !downScalingPodsMode && !downScalingNodesMode
+                        if (namespaceUptimeScalingMode) {
 
                             val uptimeAnnotation = "prescient-cluster-autoscaler/uptime"
                             val annotatedNamespaces = allowedNamespaces
@@ -177,7 +234,8 @@ class AppMain {
                             scaleDeploymentsInNamespaces(
                                 kubernetesClient,
                                 logNamespaceNames(downtimeNamespaces),
-                                coroutineDispatcher)
+                                coroutineDispatcher
+                            )
                             {
                                 0
                             }
@@ -187,7 +245,8 @@ class AppMain {
                                 kubernetesClient,
                                 logNamespaceNames(uptimeNamespaces),
                                 coroutineDispatcher,
-                                !namespaceUptimeScalingAllowHigherReplicas)
+                                !namespaceUptimeScalingAllowHigherReplicas
+                            )
                             {
                                 it.metadata.annotations["prescient-cluster-autoscaler/uptime-desired-replicas"]?.toInt()
                             }
@@ -202,7 +261,12 @@ class AppMain {
                             downScalingAutoScaleNodesMode -> {
                                 LOG.info("In downscale window start auto scaling nodes")
                                 val scaleUpResponse =
-                                    calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity, false)
+                                    calculateScaleUpFactor(
+                                        kubernetesClient,
+                                        currentScaleUpFactor,
+                                        asgOneNodeCapacity,
+                                        false
+                                    )
 
                                 LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
 
@@ -220,7 +284,12 @@ class AppMain {
 
                                 LOG.info("Start aggregating resources")
                                 val scaleUpResponse =
-                                    calculateScaleUpFactor(kubernetesClient, currentScaleUpFactor, asgOneNodeCapacity, onlyAddNodes)
+                                    calculateScaleUpFactor(
+                                        kubernetesClient,
+                                        currentScaleUpFactor,
+                                        asgOneNodeCapacity,
+                                        onlyAddNodes
+                                    )
 
                                 LOG.info("Current kubernetes node count: ${scaleUpResponse.nodeCount}")
 
@@ -228,7 +297,7 @@ class AppMain {
                             }
                         }
                         LOG.info("Finished ASG scaling")
-                    } catch (e : Exception) {
+                    } catch (e: Exception) {
                         LOG.error(e, e)
                     }
                     WaitUntilGateway(clockGateway).waitUntilNext(
@@ -237,8 +306,6 @@ class AppMain {
                         waitTimeBetweenScalingInMinutes
                     )
                 }
-                Quarkus.waitForExit()
-                return 0
             }
 
             private fun scaleDeploymentsInNamespaces(
