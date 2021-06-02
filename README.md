@@ -88,6 +88,18 @@ rules:
       - list
       - update
       - patch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - watch
+      - list
+      - update
+      - patch
+      - create
+      - delete
 ```
 ```
 apiVersion: v1
