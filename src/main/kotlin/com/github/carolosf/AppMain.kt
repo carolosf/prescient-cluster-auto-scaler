@@ -220,13 +220,24 @@ class AppMain {
                                 .filter { it.metadata.annotations.containsKey(uptimeAnnotation) }
 
                             val uptimeNamespaces = annotatedNamespaces.filter {
-                                Interval.parse(it.metadata.annotations?.get(uptimeAnnotation))
-                                    .contains(nowForUptimeScale.toInstant())
+                                try {
+                                    Interval.parse(it.metadata.annotations?.get(uptimeAnnotation)).contains(nowForUptimeScale.toInstant())
+                                } catch (e: Exception) {
+                                    LOG.info("Filtering ${it.metadata.name}")
+                                    LOG.error(e.stackTrace)
+                                    false
+                                }
                             }
 
                             val downtimeNamespaces = annotatedNamespaces.filter {
-                                !Interval.parse(it.metadata.annotations?.get(uptimeAnnotation))
-                                    .contains(nowForUptimeScale.toInstant())
+                                try {
+                                    !Interval.parse(it.metadata.annotations?.get(uptimeAnnotation))
+                                        .contains(nowForUptimeScale.toInstant())
+                                } catch (e: Exception) {
+                                    LOG.info("Filtering ${it.metadata.name}")
+                                    LOG.error(e.stackTrace)
+                                    true
+                                }
                             }
 
                             val coroutineDispatcher =
