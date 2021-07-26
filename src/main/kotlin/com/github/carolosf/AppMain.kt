@@ -29,6 +29,7 @@ import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.IllegalStateException
 import kotlin.math.max
 
 data class Resources(val cpu: BigDecimal, val memory: BigDecimal, val pods: Long)
@@ -549,15 +550,20 @@ class AppMain {
 
         private fun getTotalCpuRequestsFromListOfPods(activePodsOnNode: List<Pod>?) =
             activePodsOnNode?.fold(BigDecimal.ZERO, { a, p ->
-                return@fold a +
-                        p.spec.initContainers.fold(
-                            BigDecimal.ZERO,
-                            { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) +
-                        p.spec.containers.fold(
-                            BigDecimal.ZERO,
-                            { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) + (getCpuAmount(
-                    p.spec.overhead?.get("cpu")
-                ))
+                val cpuRequests = try {
+                    a +
+                            p.spec.initContainers.fold(
+                                BigDecimal.ZERO,
+                                { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) +
+                            p.spec.containers.fold(
+                                BigDecimal.ZERO,
+                                { aa, cc -> getCpuAmount(cc.resources.requests?.get("cpu")) + aa }) + (getCpuAmount(
+                        p.spec.overhead?.get("cpu")
+                    ))
+                } catch (e: IllegalStateException) {
+                    throw IllegalStateException("${e.message} in pod $p")
+                }
+                return@fold cpuRequests
             }
             ) ?: BigDecimal.ZERO
 
@@ -604,17 +610,7 @@ class AppMain {
                 return BigDecimal.ZERO
             }
 
-            return when (q.format) {
-                "" -> {
-                    BigDecimal(q.amount.toInt() * CPU_M_CONSTANT)
-                }
-                "m" -> {
-                    BigDecimal(q.amount.toInt())
-                }
-                else -> {
-                    throw IllegalStateException()
-                }
-            }
+            return Quantity.getAmountInBytes(q).multiply(CPU_M_CONSTANT.toBigDecimal())
         }
 
         private fun getMemAmount(q: Quantity?): BigDecimal {
