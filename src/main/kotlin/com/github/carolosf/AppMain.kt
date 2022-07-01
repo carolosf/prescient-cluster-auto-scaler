@@ -91,6 +91,8 @@ class AppMain {
         private val namespaceUptimeScaling = System.getenv("NAMESPACE_UPTIME_SCALING")?.toBoolean() ?: true
         private val namespaceUptimeScalingAllowHigherReplicas = System.getenv("NAMESPACE_UPTIME_SCALING_ALLOW_HIGHER_REPLICAS")?.toBoolean() ?: true
         private val autoscaleLockNamespace = System.getenv("LEADER_LOCK_NAMESPACE") ?: "kube-system"
+        val coroutineDispatcher =
+            Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
 
         @JvmStatic
         fun main(vararg args: String) {
@@ -197,8 +199,6 @@ class AppMain {
 
                         if (downScalingPodsMode) {
                             LOG.info("Start Daily Cluster Deployment Down Scaling")
-                            val coroutineDispatcher =
-                                Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
                             scaleDeploymentsInNamespaces(
                                 kubernetesClient,
                                 logNamespaceNames(allowedNamespaces),
@@ -241,8 +241,6 @@ class AppMain {
                                 }
                             }
 
-                            val coroutineDispatcher =
-                                Executors.newFixedThreadPool(dailyDownScalePodsThreadCount).asCoroutineDispatcher()
                             LOG.info("Start Annotated Namespace Down Scaling")
                             scaleDeploymentsInNamespaces(
                                 kubernetesClient,
@@ -380,8 +378,13 @@ class AppMain {
             private fun getDeploymentsInNamespace(
                 downscaleNamespaces: List<Namespace>,
                 kubernetesClient: DefaultKubernetesClient
-            ) = downscaleNamespaces.map {
-                it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
+            ) = downscaleNamespaces.mapNotNull {
+                kotlin.runCatching {
+                    it to kubernetesClient.apps().deployments().inNamespace(it.metadata.name).list().items
+                }.getOrElse {
+                    LOG.error(it)
+                    null
+                }
             }.toMap()
 
             private fun getAllowedNamespaces(kubernetesClient: DefaultKubernetesClient): List<Namespace> {
@@ -421,8 +424,13 @@ class AppMain {
             val kubernetesRequestsStartTime = System.currentTimeMillis()
             val schedulableWorkerNodes = getSchedulableWorkerNodes(kubernetesClient)
             val nodeNames = schedulableWorkerNodes.map { node -> node.metadata.name }
-            val activePodsByNode: Map<String, List<Pod>> = nodeNames.map { nodeName ->
-                nodeName to getNodeNonTerminatedPodList(kubernetesClient, nodeName)
+            val activePodsByNode: Map<String, List<Pod>> = nodeNames.mapNotNull { nodeName ->
+                kotlin.runCatching {
+                    nodeName to getNodeNonTerminatedPodList(kubernetesClient, nodeName)
+                }.getOrElse {
+                    LOG.error(it)
+                    null
+                }
             }.toMap()
             val kubernetesRequestsEndTime = System.currentTimeMillis()
             LOG.info("Kubernetes client requests took (Milliseconds): ${kubernetesRequestsEndTime - kubernetesRequestsStartTime}")
